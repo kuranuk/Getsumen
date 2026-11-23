@@ -1,0 +1,58 @@
+import math
+import unittest
+
+import numpy as np
+
+from lunarsim.config import load_config
+from lunarsim.lidar import FlashLidar
+from lunarsim.rover import Rover
+from lunarsim.world import World
+
+
+class WorldTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.cfg = load_config("config/default.yaml")
+        cls.world = World(cls.cfg)
+
+    def test_terrain_is_mild(self):
+        h = self.world.heights
+        self.assertLess(float(np.abs(h).max()), 4.0)
+        gy, gx = np.gradient(h, self.world.res)
+        slope = np.degrees(np.arctan(np.hypot(gx, gy)))
+        self.assertLess(float(np.percentile(slope, 99)), 15.0)
+
+    def test_deterministic(self):
+        w2 = World(self.cfg)
+        self.assertTrue(np.array_equal(w2.heights, self.world.heights))
+
+    def test_ray_hits_flat_ground(self):
+        o = np.array([-60.0, 60.0, 10.0])  # 平坦に近い遠方ではなく単純に下向き
+        d = np.array([[0.0, 0.0, -1.0]])
+        t = self.world.raycast(o, d, 0.1, 100.0)
+        self.assertAlmostEqual(float(t[0]), 10.0 - float(self.world.height(o[0], o[1])), delta=0.02)
+
+    def test_ray_hits_hls(self):
+        h = self.world.hls
+        o = np.array([h["x"] - 30.0, h["y"], self.world.hls_z0 + 2.0])
+        t = self.world.raycast(o, np.array([[1.0, 0.0, 0.0]]), 0.1, 100.0)
+        self.assertAlmostEqual(float(t[0]), 30.0 - h["radius"], delta=0.05)
+
+    def test_lidar_scan(self):
+        lidar = FlashLidar(self.cfg["sensors"]["lidars"][0], self.world)
+        rover = Rover(self.cfg["rover"], self.world)
+        pts = lidar.scan(rover.pose())
+        self.assertGreater(len(pts), 1000)
+        self.assertEqual(pts.shape[1], 4)
+        self.assertTrue(np.all(pts[:, 3] <= lidar.tmax + 0.5))
+
+    def test_rover_drives(self):
+        rover = Rover(self.cfg["rover"], self.world)
+        x0, y0 = rover.x, rover.y
+        for _ in range(200):
+            rover.step(0.02, 1.0, 0.0)
+        self.assertGreater(math.hypot(rover.x - x0, rover.y - y0), 1.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

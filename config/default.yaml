@@ -1,0 +1,110 @@
+# ============================================================
+#  月面ロボットシミュレータ 設定ファイル
+#  座標系(車体): x=前 / y=左 / z=上 (原点=車体中心, 車軸高さ)
+#  mount.yaw_deg   : 左向き回転が正 (0=正面, 90=左, 180=後ろ, -90=右)
+#  mount.pitch_deg : 上向きが正 (下向きに傾けるなら負)
+#  変更後はサーバを再起動してください。
+# ============================================================
+
+server:
+  host: 0.0.0.0
+  port: 8080
+
+simulation:
+  physics_hz: 50
+  state_hz: 30
+
+# ---------------- 月面 (マイルド) ----------------
+world:
+  seed: 7                 # 同じseedなら同じ地形
+  size: 240.0             # 地形一辺 [m]
+  resolution: 0.5         # 高さマップ格子 [m]
+  undulation:             # なだらかな起伏
+    amplitude: 0.35       # 標準偏差 [m]
+    wavelength: 45.0      # 代表波長 [m]
+    roughness: 0.04       # 細かい凹凸 [m]
+  craters:                # 浅いクレータ
+    count: 22
+    radius_min: 2.0
+    radius_max: 14.0
+    depth_ratio: 0.10     # 深さ/半径
+  rocks:                  # 岩 (べき乗則: 小さい岩ほど多い)
+    count: 450
+    radius_min: 0.08
+    radius_max: 0.7
+  sun:
+    azimuth_deg: 215.0    # x軸から反時計回り
+    elevation_deg: 14.0   # 低いほど影が長い (月極域は低仰角)
+
+# ---------------- HLS (有人着陸機) ----------------
+hls:
+  x: 0.0
+  y: 0.0
+  radius: 4.5             # 円筒近似の半径 [m]
+  height: 20.0            # ライダーに映る高さ [m]
+  pad_radius: 18.0        # 周囲の平坦パッド半径 [m]
+  hatch_azimuth_deg: 180.0  # 乗降ハッチの向き (描画のみ)
+  hatch_height: 4.0
+
+# ---------------- 有人与圧ローバー ----------------
+rover:
+  start: {x: -55.0, y: -25.0, yaw_deg: 25.0}
+  length: 6.0
+  width: 4.0
+  wheel_radius: 0.6
+  max_speed: 2.0          # [m/s]
+  max_yaw_rate_deg: 25.0  # [deg/s]
+  accel: 0.6              # [m/s^2]
+  yaw_accel_deg: 30.0     # [deg/s^2]
+  auto_standoff: 3.0      # 自動アプローチの停止距離 (前端-HLS表面) [m]
+
+# ---------------- センサ ----------------
+sensors:
+  # カメラ: 前/左/右/後ろ。増減・名称変更は自由 (画面に自動で反映)
+  cameras:
+    - name: front
+      label: 前 (Front)
+      mount: {x: 2.9, y: 0.0, z: 1.3, yaw_deg: 0, pitch_deg: -3}
+      fov_deg: 90          # 水平画角
+      width: 320
+      height: 240
+      rate_hz: 10
+    - name: rear
+      label: 後 (Rear)
+      mount: {x: -2.9, y: 0.0, z: 1.3, yaw_deg: 180, pitch_deg: -3}
+      fov_deg: 90
+      width: 320
+      height: 240
+      rate_hz: 10
+    - name: left
+      label: 左 (Left)
+      mount: {x: 0.0, y: 1.6, z: 2.0, yaw_deg: 90, pitch_deg: -3}
+      fov_deg: 90
+      width: 320
+      height: 240
+      rate_hz: 10
+    - name: right
+      label: 右 (Right)
+      mount: {x: 0.0, y: -1.6, z: 2.0, yaw_deg: -90, pitch_deg: -3}
+      fov_deg: 90
+      width: 320
+      height: 240
+      rate_hz: 10
+
+  # 前面フラッシュライダー (視野内を一括照射 → 距離画像 → 点群)
+  lidars:
+    - name: front_flash
+      label: 前面フラッシュライダー
+      mount: {x: 3.0, y: 0.0, z: 0.7, yaw_deg: 0, pitch_deg: -6}
+      h_fov_deg: 40
+      v_fov_deg: 30
+      h_pixels: 128         # 水平画素数
+      v_pixels: 96          # 垂直画素数
+      min_range: 0.5        # [m]
+      max_range: 60.0       # [m]
+      rate_hz: 5
+      range_noise_std: 0.02 # 距離ノイズ σ [m]
+      dropout: 0.01         # 欠測率 0-1
+
+ui:
+  lidar_view_range: 40.0    # 俯瞰図の初期表示半径 [m] (ホイールで変更可)
