@@ -174,6 +174,61 @@ class World:
         t = np.clip((tan_el - max_slope + w) / (2 * w), 0.0, 1.0)
         return np.rint(255 * t * t * (3 - 2 * t)).astype(np.uint8).reshape(n, n)
 
+    def sun_dir(self) -> np.ndarray:
+        e, a = self.sun_elevation, self.sun_azimuth
+        return np.array([math.cos(e) * math.cos(a), math.cos(e) * math.sin(a), math.sin(e)])
+
+    def bake_rock_shade(self, cell: float = 0.25) -> np.ndarray:
+        """岩が地面に落とす影 (球 -> 地面の楕円). 戻り値 uint8 [m,m] (0=影), 格子間隔 cell [m].
+        球を光線方向に射影した断面は半径 r の円で、地面では太陽方位方向に 1/sin(仰角) 倍に伸びた楕円になる."""
+        m = int(round(self.size / cell)) + 1
+        vis = np.ones((m, m), np.float32)
+        az, el = self.sun_azimuth, self.sun_elevation
+        L = self.sun_dir()
+        ca, sa = math.cos(az), math.sin(az)
+        sin_e = max(math.sin(el), 1e-3)
+        org = self.origin
+        for cx, cy, cz, r in self.rocks:
+            zg = cz - 0.3 * r  # 岩の接地高さ
+            sh = (cz - zg) / max(L[2], 1e-3)
+            gx, gy = cx - L[0] * sh, cy - L[1] * sh  # 影の楕円の中心
+            a_maj = min(r / sin_e, 60.0)
+            ext = a_maj + r
+            ix0 = max(0, int((gx - ext - org) / cell)); ix1 = min(m, int((gx + ext - org) / cell) + 2)
+            iy0 = max(0, int((gy - ext - org) / cell)); iy1 = min(m, int((gy + ext - org) / cell) + 2)
+            if ix1 <= ix0 or iy1 <= iy0:
+                continue
+            xs = org + np.arange(ix0, ix1) * cell - gx
+            ys = org + np.arange(iy0, iy1) * cell - gy
+            XX, YY = np.meshgrid(xs, ys)
+            u = XX * ca + YY * sa       # 太陽方位方向
+            v = -XX * sa + YY * ca      # 直交方向
+            q = (u / a_maj) ** 2 + (v / r) ** 2
+            val = np.clip((q - 0.8) / 0.4, 0.0, 1.0)  # 半影 (縁をなだらかに)
+            win = vis[iy0:iy1, ix0:ix1]
+            np.minimum(win, val.astype(np.float32), out=win)
+        return np.rint(vis * 255).astype(np.uint8)
+
+    def terrain_occluded(self, P: np.ndarray, L: np.ndarray, smax: float = 320.0) -> np.ndarray:
+        """点 P (N,3) から太陽方向 L へ伸ばした光線が地形に遮られるか (地形が点より高ければ遮蔽)."""
+        n = len(P)
+        occ = np.zeros(n, bool)
+        idx = np.arange(n)
+        px, py, pz = P[:, 0].copy(), P[:, 1].copy(), P[:, 2].copy()
+        zmax = float(self.heights.max()) + 0.05
+        half = self.size / 2.0
+        s = 0.3
+        while s < smax and idx.size:
+            x = px + L[0] * s
+            y = py + L[1] * s
+            z = pz + L[2] * s
+            hit = self.height(x, y) > z + 0.02
+            occ[idx[hit]] = True
+            keep = ~hit & (z < zmax) & (np.abs(x) < half) & (np.abs(y) < half)
+            idx, px, py, pz = idx[keep], px[keep], py[keep], pz[keep]
+            s = s * 1.03 + 0.15
+        return occ
+
     # ---------------- 問い合わせ ----------------
     def height(self, x, y):
         """双線形補間による地面高さ (ベクトル化)."""

@@ -3,18 +3,24 @@ from __future__ import annotations
 
 import asyncio
 import json
+import multiprocessing as mp
+import os
 import struct
 import time
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
 from .lidar import FlashLidar
+from .raytrace import RayTracer
+from . import workers
 from .rover import Rover
 from .world import World
 
 WEB_DIR = Path(__file__).parent / "web"
 MSG_LIDAR = 1
+MSG_CAMERA = 2
 
 
 class SimServer:
@@ -28,6 +34,14 @@ class SimServer:
         self.cmd_time = 0.0
         self.sim_t = 0.0
         self.shade = self.world.bake_shade()
+        self.rock_shade = self.world.bake_rock_shade()
+        self.raytracer = RayTracer(cfg, self.world)
+        # 重い計算はワーカープロセスで (BLAS等のスレッドは1に固定して過剰な競合を避ける)
+        for k in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+            os.environ.setdefault(k, "1")
+        n_workers = int(cfg["simulation"].get("workers") or max(1, (os.cpu_count() or 2)))
+        self.pool = ProcessPoolExecutor(n_workers, mp_context=mp.get_context("spawn"),
+                                        initializer=workers.init, initargs=(cfg,))
         self.sun_version = 0
         self._sun_pending = None
         self._sun_busy = False
@@ -43,8 +57,9 @@ class SimServer:
             while self._sun_pending is not None:
                 az, el = self._sun_pending
                 self._sun_pending = None
-                self.world.set_sun(az, el)
-                self.shade = await loop.run_in_executor(None, self.world.bake_shade)
+                az_r, el_r, shade, rock_shade = await loop.run_in_executor(self.pool, workers.bake, az, el)
+                self.world.sun_azimuth, self.world.sun_elevation = az_r, el_r
+                self.shade, self.rock_shade = shade, rock_shade
                 self.sun_version += 1
                 await self._broadcast(json.dumps(self.sun_message()))
         finally:
@@ -103,9 +118,25 @@ class SimServer:
             t0 = loop.time()
             if self.clients:
                 pose = self.rover.pose()
-                pts = await loop.run_in_executor(None, lidar.scan, pose)
+                pts = await loop.run_in_executor(self.pool, workers.scan_lidar, idx, pose)
                 header = struct.pack("<BBxxIf", MSG_LIDAR, idx, len(pts), self.sim_t)
                 await self._broadcast(header + pts.tobytes())
+            await asyncio.sleep(max(0.005, period - (loop.time() - t0)))
+
+    async def camera_loop(self, name: str):
+        """レイトレーシングでカメラ画像を生成して配信 (HDR float16, 線形). センサ処理はブラウザ側."""
+        cam = self.raytracer.cams[name]
+        loop = asyncio.get_running_loop()
+        period = 1.0 / float(cam.cfg.get("rate_hz", 2.0))
+        while True:
+            t0 = loop.time()
+            if self.clients:
+                pose = self.rover.pose()
+                img = await loop.run_in_executor(self.pool, workers.render_camera, name, pose,
+                                                 self.world.sun_azimuth, self.world.sun_elevation,
+                                                 self.shade, self.rock_shade)
+                header = struct.pack("<BBHHxxf6f", MSG_CAMERA, cam.index, cam.w, cam.h, self.sim_t, *pose)
+                await self._broadcast(header + img.tobytes())
             await asyncio.sleep(max(0.005, period - (loop.time() - t0)))
 
     async def _broadcast(self, data):
@@ -176,10 +207,12 @@ def create_app(cfg: dict) -> web.Application:
     async def on_startup(app):
         app["tasks"] = [asyncio.create_task(sim.physics_loop()), asyncio.create_task(sim.state_loop())]
         app["tasks"] += [asyncio.create_task(sim.lidar_loop(i)) for i in range(len(sim.lidars))]
+        app["tasks"] += [asyncio.create_task(sim.camera_loop(n)) for n in sim.raytracer.cams]
 
     async def on_cleanup(app):
         for t in app["tasks"]:
             t.cancel()
+        sim.pool.shutdown(wait=False, cancel_futures=True)
 
     @web.middleware
     async def no_cache(request, handler):

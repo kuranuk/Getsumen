@@ -285,10 +285,12 @@ async function main() {
     const canvas = document.createElement('canvas'); canvas.width = c.width; canvas.height = c.height;
     el.appendChild(canvas); $('#cams').appendChild(el);
     // HDR(線形・浮動小数点)で描画し、露出→ノイズ→トーンマップ→sRGB をセンサモデルとして自前で適用する
-    const rt = new THREE.WebGLRenderTarget(c.width, c.height, { samples: 4, type: THREE.FloatType });
+    const raytraced = (c.render || 'raytrace') !== 'raster'; // true: サーバのレイトレーシング画像を受信 / false: ブラウザで描画
+    el.querySelector('header span').insertAdjacentHTML('beforeend', ` <small style="opacity:.7">${raytraced ? 'RT' : 'raster'}</small>`);
+    const rt = raytraced ? null : new THREE.WebGLRenderTarget(c.width, c.height, { samples: 4, type: THREE.FloatType });
     canvas.style.filter = c.blur_px > 0 ? `blur(${c.blur_px}px)` : 'none';
     return {
-      cfg: c, cam, canvas, ctx: canvas.getContext('2d'), rt, exp: 1.0,
+      cfg: c, cam, canvas, ctx: canvas.getContext('2d'), rt, exp: 1.0, topDown: raytraced,
       buf: new Float32Array(c.width * c.height * 4), img: new ImageData(c.width, c.height),
       period: 1000 / (c.rate_hz || 10), last: -1e9, fpsEl: el.querySelector('.fps'), n: 0, t0: performance.now(),
     };
@@ -359,8 +361,37 @@ async function main() {
   }
   const send = (o) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
 
+  // float16 -> float32 変換表
+  const HALF = new Float32Array(65536);
+  for (let i = 0; i < 65536; i++) {
+    const e = (i >> 10) & 31, m = i & 1023, sgn = i & 0x8000 ? -1 : 1;
+    HALF[i] = e === 0 ? sgn * m * 2 ** -24 : e === 31 ? (m ? NaN : sgn * Infinity) : sgn * (1 + m / 1024) * 2 ** (e - 15);
+  }
+  const _eul = new THREE.Euler(0, 0, 0, 'ZYX');
+  function onCameraFrame(buf, dv) {
+    const c = cams[dv.getUint8(1)]; if (!c) return;
+    const w = dv.getUint16(2, true), h = dv.getUint16(4, true);
+    if (w !== c.cfg.width || h !== c.cfg.height) return;
+    const pose = [0, 1, 2, 3, 4, 5].map((i) => dv.getFloat32(12 + i * 4, true)); // x,y,z,yaw,pitch,roll (撮影時点)
+    const hv = new Uint16Array(buf, 36, w * h * 3), f = c.buf;
+    for (let i = 0, n = w * h; i < n; i++) {
+      f[i * 4] = HALF[hv[i * 3]]; f[i * 4 + 1] = HALF[hv[i * 3 + 1]]; f[i * 4 + 2] = HALF[hv[i * 3 + 2]];
+    }
+    // 撮影時点のローバー姿勢に合わせて、グレア/距離目盛の投影を計算する (走行中でも画像と目盛が一致する)
+    const keep = [rover.position.clone(), rover.rotation.clone()];
+    rover.position.set(pose[0], pose[1], pose[2]); rover.rotation.set(pose[5], pose[4], pose[3], 'ZYX');
+    rover.updateMatrixWorld(true);
+    c.cam.matrixWorldInverse.copy(c.cam.matrixWorld).invert();
+    sensorPipeline(c);
+    rover.position.copy(keep[0]); rover.rotation.copy(keep[1]); rover.updateMatrixWorld(true);
+    const now = performance.now();
+    c.n++;
+    if (now - c.t0 > 2000) { c.fpsEl.textContent = `${(c.n * 1000 / (now - c.t0)).toFixed(1)} Hz`; c.n = 0; c.t0 = now; }
+  }
+
   function onBinary(buf) {
     const dv = new DataView(buf);
+    if (dv.getUint8(0) === 2) return onCameraFrame(buf, dv);
     if (dv.getUint8(0) !== 1) return;
     const idx = dv.getUint8(1), n = dv.getUint32(4, true);
     const l = lidars[idx]; if (!l) return;
@@ -565,7 +596,7 @@ async function main() {
     const e = c.exp, rn2 = cfg.read_noise ** 2, sn = cfg.shot_noise, vg = cfg.vignette;
 
     for (let y = 0; y < h; y++) {
-      const src = (h - 1 - y) * w * 4, dst = y * w * 4, ny = (y + 0.5) / h * 2 - 1;
+      const src = (c.topDown ? y : h - 1 - y) * w * 4, dst = y * w * 4, ny = (y + 0.5) / h * 2 - 1;
       for (let x = 0; x < w; x++) {
         const nx = (x + 0.5) / w * 2 - 1, r2 = (nx * nx + ny * ny) / 2;
         const vig = 1 - vg * r2 * r2 * 1.6 - vg * 0.2 * r2;
@@ -590,7 +621,7 @@ async function main() {
           for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
             const xx = Math.round(px) + dx, yy = Math.round(py) + dy;
             if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
-            if (f[((h - 1 - yy) * w + xx) * 4] > 30) vis++;
+            if (f[((c.topDown ? yy : h - 1 - yy) * w + xx) * 4] > 30) vis++;
           }
           const a = Math.min(1, vis / 6) * cfg.glare;
           if (a > 0.02) {
@@ -651,7 +682,7 @@ async function main() {
   function renderCameras(now) {
     for (const l of lidars) l.pts.visible = false; // 点群をカメラ画像に写さない
     for (const c of cams) {
-      if (now - c.last < c.period) continue;
+      if (!c.rt || now - c.last < c.period) continue;
       c.last = now;
       renderer.setRenderTarget(c.rt);
       renderer.render(scene, c.cam);

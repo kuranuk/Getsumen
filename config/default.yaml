@@ -78,7 +78,11 @@ sensors:
       fov_deg: 90          # 水平画角
       width: 320
       height: 240
-      rate_hz: 10
+      rate_hz: 2           # レイトレーシングは計算が重いので低め (CPUに応じて上げる)
+      render: raytrace     # raytrace=サーバでレイトレーシング / raster=ブラウザCG描画(高速・近似)
+      supersample: 1       # 1画素あたり n x n サンプル (2で滑らか・4倍遅い)
+      stars: true          # 恒星 (等級ベース。日向に合わせた露出では写らない)
+      star_limit_mag: 7.0
       # --- 実機カメラ風の画像特性 (全カメラで省略可。下は既定値) ---
       exposure: auto       # auto = 自動露出 / 数値 = 固定の露出倍率
       ev_bias: 0.0         # 露出補正 [EV]
@@ -94,21 +98,21 @@ sensors:
       fov_deg: 90
       width: 320
       height: 240
-      rate_hz: 10
+      rate_hz: 2
     - name: left
       label: 左 (Left)
       mount: {x: 0.0, y: 2.0, z: 2.0, yaw_deg: 90, pitch_deg: -3}   # 箱の側面 (y=width/2)
       fov_deg: 90
       width: 320
       height: 240
-      rate_hz: 10
+      rate_hz: 2
     - name: right
       label: 右 (Right)
       mount: {x: 0.0, y: -2.0, z: 2.0, yaw_deg: -90, pitch_deg: -3}
       fov_deg: 90
       width: 320
       height: 240
-      rate_hz: 10
+      rate_hz: 2
 
   # 前面フラッシュライダー (視野内を一括照射 → 距離画像 → 点群)
   lidars:

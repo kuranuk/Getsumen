@@ -56,3 +56,42 @@ class WorldTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RayTraceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from lunarsim.raytrace import RayTracer
+        cls.cfg = load_config("config/default.yaml")
+        cls.world = World(cls.cfg)
+        cls.rt = RayTracer(cls.cfg, cls.world)
+        cls.shade = cls.world.bake_shade()
+        cls.rock = cls.world.bake_rock_shade()
+
+    def test_render_shape_and_hdr(self):
+        rover = Rover(self.cfg["rover"], self.world)
+        img = self.rt.render("front", rover.pose(), self.shade, self.rock).astype(np.float32)
+        c = self.cfg["sensors"]["cameras"][0]
+        self.assertEqual(img.shape, (c["height"], c["width"], 3))
+        self.assertTrue(np.isfinite(img).all())
+        self.assertLess(float(img[:5].max()), 1e-3)      # 上端は空 (黒)
+        self.assertGreater(float(img[-20:].mean()), 0.0)  # 下は地面
+
+    def test_sun_disc_visible_when_facing_sun(self):
+        rover = Rover(self.cfg["rover"], self.world)
+        x, y, z, _, p, r = rover.pose()
+        # 太陽方位を向いたローバー: 前方カメラの中央に太陽円盤 (極端に高い輝度) が写る
+        pose = (x, y, z, self.world.sun_azimuth, 0.0, 0.0)
+        img = self.rt.render("front", pose, self.shade, self.rock).astype(np.float32)
+        self.assertGreater(float(img.max()), 1e3)
+
+    def test_shadow_of_hls_is_dark(self):
+        w = self.world
+        h = w.hls
+        L = w.sun_dir()
+        # HLSの影の中の地面点
+        d = -L[:2] / np.linalg.norm(L[:2])
+        P = np.array([[h["x"] + d[0] * 60.0, h["y"] + d[1] * 60.0, 0.0]])
+        self.assertTrue(bool(self.rt._hls_shadow(P, L)[0]))
+        P2 = np.array([[h["x"] - d[0] * 60.0, h["y"] - d[1] * 60.0, 0.0]])
+        self.assertFalse(bool(self.rt._hls_shadow(P2, L)[0]))
