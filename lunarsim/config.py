@@ -89,6 +89,9 @@ def _validate(cfg: dict) -> None:
         c.setdefault("vignette", 0.35)       # 周辺減光 0-1
         c.setdefault("glare", 0.8)           # 太陽直視時のグレア強度 0-1
         c.setdefault("blur_px", 0.6)         # 光学ボケ [px]
+        # 地面距離の目盛 (カメラ位置から平坦な接地面を仮定した推定値)
+        c.setdefault("distance_overlay", True)
+        c.setdefault("overlay_distances", [2, 4, 6, 8, 10, 15, 20, 30, 50])
         if c["name"] in names:
             raise ValueError(f"センサ名が重複しています: {c['name']}")
         names.add(c["name"])

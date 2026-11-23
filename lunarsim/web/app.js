@@ -590,6 +590,49 @@ async function main() {
         }
       }
     }
+    drawDistanceOverlay(c);
+  }
+
+  // ---- 地面距離の目盛: カメラ位置から平坦な接地面(車輪接地高さ)を仮定した推定値 ----
+  // 車体座標系で「カメラ直下を中心とする半径 d の円」を接地面上に描き、実際のカメラモデルで投影する。
+  // 地形の凹凸や車体の傾きによる実距離との差は、この目盛とレンジ(ライダー)との比較で分かる。
+  const _p = new THREE.Vector3();
+  function drawDistanceOverlay(c) {
+    const cfg = c.cfg, ctx = c.ctx, w = cfg.width, h = cfg.height;
+    if (!cfg.distance_overlay || !$('#c-dist').checked) return;
+    const m = cfg.mount, zg = -rcfg.wheel_radius; // 接地面の高さ (車体座標)
+    const t = Math.tan(rad(c.cam.fov) / 2), asp = c.cam.aspect;
+    const project = (bx, by) => {
+      _p.set(bx, by, zg).applyMatrix4(rover.matrixWorld).applyMatrix4(c.cam.matrixWorldInverse);
+      if (_p.z > -0.3) return null;
+      return [(_p.x / -_p.z / (t * asp) * 0.5 + 0.5) * w, (1 - (_p.y / -_p.z / t * 0.5 + 0.5)) * h];
+    };
+    ctx.save();
+    ctx.lineWidth = 1; ctx.font = '11px system-ui, sans-serif'; ctx.textBaseline = 'middle';
+    const y0 = rad(m.yaw_deg || 0), half = rad(cfg.fov_deg) / 2 + 0.2;
+    let lastY = 1e9; // 近い順に描き、ラベルが密集する遠方は間引く
+    for (const d of [...cfg.overlay_distances].sort((a, b) => a - b)) {
+      ctx.strokeStyle = 'rgba(255,230,120,0.7)';
+      ctx.beginPath();
+      let pen = false, best = null;
+      for (let a = -half; a <= half; a += rad(1.0)) {
+        const pt = project(m.x + d * Math.cos(y0 + a), m.y + d * Math.sin(y0 + a));
+        if (!pt || pt[0] < -20 || pt[0] > w + 20 || pt[1] < -20 || pt[1] > h + 20) { pen = false; continue; }
+        pen ? ctx.lineTo(pt[0], pt[1]) : ctx.moveTo(pt[0], pt[1]);
+        pen = true;
+        // ラベルは画像中央付近 (x が中心に最も近い点) に置く。ただし画面内に収まるものだけ
+        const score = Math.abs(pt[0] - w * 0.5);
+        if (pt[1] > 10 && pt[1] < h - 6 && (!best || score < best[2])) best = [pt[0], pt[1], score];
+      }
+      ctx.stroke();
+      if (best && Math.abs(best[1] - lastY) >= 13) {
+        lastY = best[1];
+        const label = `${d} m`;
+        ctx.strokeStyle = 'rgba(0,0,0,0.85)'; ctx.lineWidth = 3; ctx.strokeText(label, best[0] + 3, best[1] - 6);
+        ctx.fillStyle = '#ffe678'; ctx.fillText(label, best[0] + 3, best[1] - 6); ctx.lineWidth = 1;
+      }
+    }
+    ctx.restore();
   }
 
   function renderCameras(now) {
