@@ -17,10 +17,10 @@ class WorldTests(unittest.TestCase):
 
     def test_terrain_is_mild(self):
         h = self.world.heights
-        self.assertLess(float(np.abs(h).max()), 4.0)
+        self.assertLess(float(np.abs(h).max()), 9.0)
         gy, gx = np.gradient(h, self.world.res)
         slope = np.degrees(np.arctan(np.hypot(gx, gy)))
-        self.assertLess(float(np.percentile(slope, 99)), 15.0)
+        self.assertLess(float(np.percentile(slope, 99)), 22.0)
 
     def test_deterministic(self):
         w2 = World(self.cfg)

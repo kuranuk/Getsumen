@@ -23,18 +23,22 @@ world:
     amplitude: 0.35       # 標準偏差 [m]
     wavelength: 45.0      # 代表波長 [m]
     roughness: 0.04       # 細かい凹凸 [m]
-  craters:                # 浅いクレータ
-    count: 22
-    radius_min: 2.0
-    radius_max: 14.0
-    depth_ratio: 0.10     # 深さ/半径
-  rocks:                  # 岩 (べき乗則: 小さい岩ほど多い)
-    count: 450
-    radius_min: 0.08
-    radius_max: 0.7
-  sun:
-    azimuth_deg: 215.0    # x軸から反時計回り
-    elevation_deg: 14.0   # 低いほど影が長い (月極域は低仰角)
+  # --- 月南極(極域ハイランド)の公開統計に基づく (LOLA / LROC / Diviner など) ---
+  craters:                # 重なり合った飽和気味のクレータ群 (累積 N(>D)=1.54*sat*D^-2 /m^2)
+    diameter_min: 4.0     # [m]
+    diameter_max: 80.0    # [m]
+    saturation: 0.03      # 幾何学的飽和の割合 (大きいほど密)
+    depth_ratio: 0.05     # 平均 深さ/直径 (劣化したクレータを含む。新鮮=0.1以上)
+  rocks:                  # 岩: 面積被覆率 k と指数型サイズ分布 (Golombek)
+    abundance: 0.02       # k: 典型的な極域は 1-3%。新しいクレータ周辺は高い
+    min_diameter: 0.25    # [m]
+    max_diameter: 2.0     # [m]
+    rim_fraction: 0.35    # クレータ縁に集中配置する割合
+    max_count: 2500
+  sun:                    # 南極: 太陽は地平線すれすれ (軸傾斜 1.54° のため仰角 0〜約1.5°)
+    azimuth_deg: 110.0    # x軸から反時計回り (画面のスライダでも変更可。約29.5日で一周)
+    elevation_deg: 1.5    # 影の長さは 高さ/tan(仰角) (20m のHLSで約760m)
+    ambient: 0.03         # 地形からの相互反射/地球照 (影の中の明るさ)
 
 # ---------------- HLS (有人着陸機) ----------------
 hls:
@@ -69,6 +73,15 @@ sensors:
       width: 320
       height: 240
       rate_hz: 10
+      # --- 実機カメラ風の画像特性 (全カメラで省略可。下は既定値) ---
+      exposure: auto       # auto = 自動露出 / 数値 = 固定の露出倍率
+      ev_bias: 0.0         # 露出補正 [EV]
+      auto_exposure_max: 40.0
+      read_noise: 0.006    # 読み出しノイズ
+      shot_noise: 0.012    # ショットノイズ (暗部ほど目立つ)
+      vignette: 0.35       # 周辺減光
+      glare: 0.8           # 太陽が写った時のグレア
+      blur_px: 0.6         # 光学ボケ [px]
     - name: rear
       label: 後 (Rear)
       mount: {x: -2.9, y: 0.0, z: 1.3, yaw_deg: 180, pitch_deg: -3}
@@ -108,3 +121,4 @@ sensors:
 
 ui:
   lidar_view_range: 40.0    # 俯瞰図の初期表示半径 [m] (ホイールで変更可)
+  exposure: 1.0             # 右側3Dビューの露出

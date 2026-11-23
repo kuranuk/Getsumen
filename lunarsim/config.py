@@ -14,9 +14,22 @@ DEFAULTS: dict = {
         "size": 240.0,          # 地形一辺 [m]
         "resolution": 0.5,      # 高さマップ格子間隔 [m]
         "undulation": {"amplitude": 0.35, "wavelength": 45.0, "roughness": 0.04},
-        "craters": {"count": 22, "radius_min": 2.0, "radius_max": 14.0, "depth_ratio": 0.10},
-        "rocks": {"count": 450, "radius_min": 0.08, "radius_max": 0.7},
-        "sun": {"azimuth_deg": 215.0, "elevation_deg": 14.0},
+        # 月極域ハイランドの統計に基づく (LOLA/LROC/Diviner の公開値)
+        "craters": {
+            "diameter_min": 4.0,     # [m] 生成する最小直径
+            "diameter_max": 80.0,    # [m] 最大直径
+            "saturation": 0.03,      # 幾何学的飽和に対する割合 (累積 N(>D)=1.54*sat*D^-2 /m^2)
+            "depth_ratio": 0.05,     # 平均 深さ/直径 (劣化クレータを含む。新鮮=0.1+)
+        },
+        "rocks": {
+            "abundance": 0.02,       # 岩の面積被覆率 k (極域の典型 1-3%, 新しいクレータ周辺は高い)
+            "min_diameter": 0.25,    # [m]
+            "max_diameter": 2.0,     # [m]
+            "rim_fraction": 0.35,    # クレータ縁に集中配置する割合
+            "max_count": 2500,
+        },
+        # 南極: 太陽は常に地平線近く (仰角 0-1.5° 程度, 軸傾斜 1.54°)。方位角は約29.5日で一周
+        "sun": {"azimuth_deg": 110.0, "elevation_deg": 1.5, "ambient": 0.03},
     },
     "hls": {
         "x": 0.0, "y": 0.0, "radius": 4.5, "height": 20.0,
@@ -34,7 +47,7 @@ DEFAULTS: dict = {
         "auto_standoff": 3.0,      # 自動アプローチの停止距離 (車体前端-HLS表面) [m]
     },
     "sensors": {"cameras": [], "lidars": []},
-    "ui": {"lidar_view_range": 40.0},
+    "ui": {"lidar_view_range": 40.0, "exposure": 1.0},
 }
 
 
@@ -67,6 +80,15 @@ def _validate(cfg: dict) -> None:
         c.setdefault("label", c["name"])
         c.setdefault("rate_hz", 10.0)
         c.setdefault("mount", {})
+        # 実機カメラ風の画像特性
+        c["exposure"] = c.get("exposure", "auto")  # "auto" か 固定倍率
+        c.setdefault("ev_bias", 0.0)
+        c.setdefault("auto_exposure_max", 40.0)
+        c.setdefault("read_noise", 0.006)    # 読み出しノイズ (飽和=1.0 に対する標準偏差)
+        c.setdefault("shot_noise", 0.012)    # ショットノイズ係数
+        c.setdefault("vignette", 0.35)       # 周辺減光 0-1
+        c.setdefault("glare", 0.8)           # 太陽直視時のグレア強度 0-1
+        c.setdefault("blur_px", 0.6)         # 光学ボケ [px]
         if c["name"] in names:
             raise ValueError(f"センサ名が重複しています: {c['name']}")
         names.add(c["name"])

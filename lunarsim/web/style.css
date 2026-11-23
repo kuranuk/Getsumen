@@ -26,3 +26,5 @@ label { color:var(--dim); user-select:none; }
 .conn { font-size:12px; padding:1px 6px; border-radius:8px; }
 .conn.ok { background:#12402a; color:#7ee2a8; } .conn.off { background:#4a1d1d; color:#ff9a9a; }
 @media (max-width: 900px) { #app { grid-template-columns: 1fr; grid-template-rows: 55vh 45vh; } #left { order:2; overflow:auto; } }
+input[type=range] { vertical-align:middle; width:90px; accent-color:var(--acc); }
+.val { display:inline-block; min-width:3.2em; color:var(--fg); font-variant-numeric:tabular-nums; }

@@ -27,6 +27,34 @@ class SimServer:
         self.cmd = (0.0, 0.0)
         self.cmd_time = 0.0
         self.sim_t = 0.0
+        self.shade = self.world.bake_shade()
+        self.sun_version = 0
+        self._sun_pending = None
+        self._sun_busy = False
+
+    # ---------------- 太陽 (方位/仰角の変更 -> 地形の影を再計算) ----------------
+    async def set_sun(self, az_deg: float, el_deg: float):
+        self._sun_pending = (az_deg, el_deg)
+        if self._sun_busy:
+            return  # 計算中なら最新値だけ保持
+        self._sun_busy = True
+        loop = asyncio.get_running_loop()
+        try:
+            while self._sun_pending is not None:
+                az, el = self._sun_pending
+                self._sun_pending = None
+                self.world.set_sun(az, el)
+                self.shade = await loop.run_in_executor(None, self.world.bake_shade)
+                self.sun_version += 1
+                await self._broadcast(json.dumps(self.sun_message()))
+        finally:
+            self._sun_busy = False
+
+    def sun_message(self) -> dict:
+        import math
+        return {"t": "sun", "az": self.world.sun_azimuth, "el": self.world.sun_elevation,
+                "az_deg": math.degrees(self.world.sun_azimuth), "el_deg": math.degrees(self.world.sun_elevation),
+                "v": self.sun_version}
 
     # ---------------- 配信用データ ----------------
     def world_json(self) -> dict:
@@ -39,6 +67,7 @@ class SimServer:
             "cameras": c["sensors"]["cameras"],
             "lidars": c["sensors"]["lidars"],
             "ui": c["ui"],
+            "sun": {**self.sun_message(), "ambient": self.world.ambient},
         }
 
     def heightmap_bytes(self) -> bytes:
@@ -102,6 +131,9 @@ class SimServer:
                 self.rover.auto = False
         elif t == "auto":
             self.rover.auto = bool(msg.get("on", False))
+        elif t == "sun":
+            asyncio.get_running_loop().create_task(
+                self.set_sun(float(msg.get("az_deg", 0.0)), float(msg.get("el_deg", 1.5))))
         elif t == "reset":
             self.rover.reset()
             self.cmd = (0.0, 0.0)
@@ -120,6 +152,9 @@ def create_app(cfg: dict) -> web.Application:
 
     async def api_heightmap(_):
         return web.Response(body=sim.heightmap_bytes(), content_type="application/octet-stream")
+
+    async def api_shade(_):
+        return web.Response(body=sim.shade.tobytes(), content_type="application/octet-stream")
 
     async def ws_handler(request):
         ws = web.WebSocketResponse(heartbeat=20.0)
@@ -156,6 +191,7 @@ def create_app(cfg: dict) -> web.Application:
     app.router.add_get("/", index)
     app.router.add_get("/api/world", api_world)
     app.router.add_get("/api/heightmap", api_heightmap)
+    app.router.add_get("/api/shade", api_shade)
     app.router.add_get("/ws", ws_handler)
     app.router.add_static("/", WEB_DIR, show_index=False)
     app.on_startup.append(on_startup)

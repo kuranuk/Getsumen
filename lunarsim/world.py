@@ -54,65 +54,125 @@ class World:
         u = wc["undulation"]
         h = _fractal_noise(rng, self.n, self.res, u["wavelength"], beta=3.2) * u["amplitude"]
         h += _fractal_noise(rng, self.n, self.res, 4.0, beta=3.0) * u["roughness"]
-        h *= mask
 
-        # --- クレータ (マイルド: 浅いすり鉢 + なだらかなリム) ---
+        # --- クレータ (サイズ頻度分布に従う。重なり合って飽和した極域ハイランドの外観) ---
         self.craters = self._place_craters(rng, wc["craters"], pad)
         for cx, cy, R, d in self.craters:
-            h += self._crater_profile(X, Y, cx, cy, R, d)
+            self._add_crater(h, X, Y, cx, cy, R, d)
+        h *= mask  # HLSパッドと地形端は平坦化
         self.heights = h.astype(np.float32)  # [iy, ix]
 
         # --- 岩 ---
         self.rocks = self._place_rocks(rng, wc["rocks"])  # (m,4): x,y,z,r
         self.hls_z0 = float(self.height(hc["x"], hc["y"]))
-        self.sun_azimuth = math.radians(wc["sun"]["azimuth_deg"])
-        self.sun_elevation = math.radians(wc["sun"]["elevation_deg"])
+        self.ambient = float(wc["sun"].get("ambient", 0.03))
+        self.set_sun(wc["sun"]["azimuth_deg"], wc["sun"]["elevation_deg"])
 
     # ---------------- 生成 ----------------
     def _place_craters(self, rng, cc, pad):
-        out = []
+        """累積サイズ頻度 N(>D) = 1.54 * sat * D^-2 [個/m^2] (傾き -2: 平衡状態) に従って配置."""
+        dmin, dmax = float(cc["diameter_min"]), float(cc["diameter_max"])
+        sat = float(cc["saturation"])
+        area = self.size ** 2
+        n = int(rng.poisson(1.54 * sat * area * (dmin ** -2 - dmax ** -2)))
+        u = rng.random(n)
+        D = (dmin ** -2 - u * (dmin ** -2 - dmax ** -2)) ** -0.5  # 逆関数サンプリング
         hx, hy = self.hls["x"], self.hls["y"]
         sx, sy = self.rover_start["x"], self.rover_start["y"]
-        rmin, rmax = float(cc["radius_min"]), float(cc["radius_max"])
         half = self.size / 2.0
-        attempts = 0
-        while len(out) < int(cc["count"]) and attempts < 5000:
-            attempts += 1
-            R = math.exp(rng.uniform(math.log(rmin), math.log(rmax)))
-            m = half - 2.0 * R - 2.0
-            if m <= 0:
+        out = []
+        for Di in sorted(D, reverse=True):
+            R = Di / 2.0
+            cx, cy = rng.uniform(-half, half, 2)
+            if math.hypot(cx - hx, cy - hy) < pad + R + 3:
                 continue
-            cx, cy = rng.uniform(-m, m, 2)
-            if math.hypot(cx - hx, cy - hy) < pad + R + 5:
+            if math.hypot(cx - sx, cy - sy) < R + 8:
                 continue
-            if math.hypot(cx - sx, cy - sy) < R + 10:
-                continue
-            d = float(cc["depth_ratio"]) * R * rng.uniform(0.6, 1.0)
-            out.append((float(cx), float(cy), float(R), float(d)))
+            # 劣化度で 深さ/直径 がばらつく (新鮮ほど深い). 小さいクレータほど相対的に浅く
+            ratio = float(cc["depth_ratio"]) * rng.uniform(0.4, 1.3) * min(1.0, 0.6 + 0.1 * Di)
+            out.append((float(cx), float(cy), float(R), float(ratio * Di)))
         return out
 
-    @staticmethod
-    def _crater_profile(X, Y, cx, cy, R, d):
-        r = np.hypot(X - cx, Y - cy) / R
+    def _add_crater(self, h, X, Y, cx, cy, R, d):
+        """窓領域だけに放物面の窪み + なだらかなリム/噴出物を加える."""
+        res, org, n = self.res, self.origin, self.n
+        w = 3.0 * R
+        ix0 = max(0, int((cx - w - org) / res)); ix1 = min(n, int((cx + w - org) / res) + 2)
+        iy0 = max(0, int((cy - w - org) / res)); iy1 = min(n, int((cy + w - org) / res) + 2)
+        if ix1 <= ix0 or iy1 <= iy0:
+            return
+        r = np.hypot(X[iy0:iy1, ix0:ix1] - cx, Y[iy0:iy1, ix0:ix1] - cy) / R
         bowl = np.where(r < 1.0, -d * (1.0 - r * r), 0.0)
-        rim = 0.25 * d * np.exp(-(((r - 1.0) / 0.35) ** 2))
-        return bowl + rim
+        rim = 0.22 * d * np.exp(-(((r - 1.0) / 0.30) ** 2))
+        ejecta = 0.06 * d * np.clip(r, 1.0, None) ** -3.0 * (r >= 1.0)
+        h[iy0:iy1, ix0:ix1] += bowl + rim + ejecta
 
     def _place_rocks(self, rng, rc):
-        rmin, rmax = float(rc["radius_min"]), float(rc["radius_max"])
-        n = int(rc["count"])
+        """岩の大きさ分布 (Golombek): 累積面積 F(D)=k exp(-qD), q=1.79+0.152/k.
+        個数密度 n(D) = -dF/dD / (pi D^2/4).  新しいクレータの縁に集中させる."""
+        k = float(rc["abundance"])
+        dmin, dmax = float(rc["min_diameter"]), float(rc["max_diameter"])
+        q = 1.79 + 0.152 / max(k, 1e-4)
+        Dg = np.linspace(dmin, dmax, 400)
+        nd = k * q * np.exp(-q * Dg) / (math.pi * Dg ** 2 / 4.0)
+        cdf = np.concatenate([[0], np.cumsum(0.5 * (nd[1:] + nd[:-1]) * np.diff(Dg))])
+        total = cdf[-1] * self.size ** 2
+        n = int(min(rc.get("max_count", 2500), rng.poisson(total)))
+        D = np.interp(rng.random(n) * cdf[-1], cdf, Dg)
+        r = D / 2.0
+
         half = self.size / 2.0 - 3.0
-        # べき乗則 (小さい岩が多い)
-        r = rmin * (1.0 - rng.random(n)) ** (-1.0 / 1.8)
-        r = np.minimum(r, rmax)
         xy = rng.uniform(-half, half, (n, 2))
+        # 一部をクレータ縁へ
+        big = [c for c in self.craters if c[2] >= 4.0]
+        nrim = int(n * float(rc.get("rim_fraction", 0.0))) if big else 0
+        if nrim:
+            w = np.array([c[2] for c in big]); w = w / w.sum()
+            ci = rng.choice(len(big), nrim, p=w)
+            ang = rng.uniform(0, 2 * np.pi, nrim)
+            rr = np.array([big[i][2] for i in ci]) * (1.05 + rng.normal(0, 0.18, nrim))
+            xy[:nrim, 0] = np.array([big[i][0] for i in ci]) + rr * np.cos(ang)
+            xy[:nrim, 1] = np.array([big[i][1] for i in ci]) + rr * np.sin(ang)
         hx, hy = self.hls["x"], self.hls["y"]
         sx, sy = self.rover_start["x"], self.rover_start["y"]
-        ok = (np.hypot(xy[:, 0] - hx, xy[:, 1] - hy) > self.hls["radius"] + 2.0 + r) & \
+        ok = (np.abs(xy[:, 0]) < half) & (np.abs(xy[:, 1]) < half) & \
+             (np.hypot(xy[:, 0] - hx, xy[:, 1] - hy) > self.hls["radius"] + 2.0 + r) & \
              (np.hypot(xy[:, 0] - sx, xy[:, 1] - sy) > 6.0 + r)
         xy, r = xy[ok], r[ok]
         z = self.height(xy[:, 0], xy[:, 1]) + 0.3 * r  # 一部埋まった球
         return np.column_stack([xy, z, r]).astype(np.float64)
+
+    # ---------------- 太陽 / 影の焼き込み ----------------
+    def set_sun(self, azimuth_deg: float, elevation_deg: float):
+        self.sun_azimuth = math.radians(azimuth_deg % 360.0)
+        self.sun_elevation = math.radians(max(0.0, min(10.0, elevation_deg)))
+
+    def bake_shade(self, azimuth: float | None = None, elevation: float | None = None) -> np.ndarray:
+        """地形自身が落とす影 (ホライズン判定). 戻り値 uint8 [iy,ix] (0=影, 255=日照).
+        太陽の視直径 (0.53deg) 分の半影を含む. 岩/HLS/ローバーの影は描画側のシャドウマップで扱う."""
+        az = self.sun_azimuth if azimuth is None else azimuth
+        el = self.sun_elevation if elevation is None else elevation
+        dx, dy = math.cos(az), math.sin(az)
+        tan_el = math.tan(el)
+        H = self.heights.astype(np.float32)
+        n, res, org = self.n, self.res, self.origin
+        X = (self._X.astype(np.float32)).ravel(); Y = (self._Y.astype(np.float32)).ravel()
+        h0 = H.ravel()
+        max_slope = np.full(h0.shape, -1e3, np.float32)
+        s, ratio = 1.0, 1.03
+        Hf = H.ravel()
+        while s < self.size:
+            fx = np.clip((X + dx * s - org) / res, 0, n - 1.001)
+            fy = np.clip((Y + dy * s - org) / res, 0, n - 1.001)
+            ix = fx.astype(np.int32); iy = fy.astype(np.int32)
+            tx = fx - ix; ty = fy - iy
+            i00 = iy * n + ix
+            hh = (Hf[i00] * (1 - tx) + Hf[i00 + 1] * tx) * (1 - ty) + (Hf[i00 + n] * (1 - tx) + Hf[i00 + n + 1] * tx) * ty
+            np.maximum(max_slope, (hh - h0) / s, out=max_slope)
+            s = s * ratio + 0.15
+        w = math.tan(math.radians(0.27))  # 太陽半径
+        t = np.clip((tan_el - max_slope + w) / (2 * w), 0.0, 1.0)
+        return np.rint(255 * t * t * (3 - 2 * t)).astype(np.uint8).reshape(n, n)
 
     # ---------------- 問い合わせ ----------------
     def height(self, x, y):

@@ -30,30 +30,58 @@ async function main() {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.shadowMap.autoUpdate = false; // 1フレームに1回だけ影を更新 (カメラ画像でも共用)
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = world.ui.exposure ?? 1.0;
   $('#view3d').appendChild(renderer.domElement);
 
-  // ---- 光源 (太陽 + ごく弱い環境光) ----
-  const sunDir = new THREE.Vector3(
-    Math.cos(T.sun_elevation) * Math.cos(T.sun_azimuth),
-    Math.cos(T.sun_elevation) * Math.sin(T.sun_azimuth),
-    Math.sin(T.sun_elevation));
-  const sun = new THREE.DirectionalLight(0xfff4e6, 3.2);
+  // ---- 太陽 (南極: 仰角 0〜数度の低い太陽。方位/仰角は UI から変更可) ----
+  const sunDir = new THREE.Vector3(0, 0, 1);
+  const SUN_DIST = 1500;
+  const sun = new THREE.DirectionalLight(0xfff1de, Math.PI); // 垂直入射の白面が反射率どおりに見える強度
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.bias = -0.0004;
-  sun.shadow.normalBias = 0.05;
+  sun.shadow.bias = -0.0003;
+  sun.shadow.normalBias = 0.04;
   sun.shadow.camera.near = 1;
-  sun.shadow.camera.far = 600;
+  sun.shadow.camera.far = SUN_DIST * 2.2; // 低い太陽では影の方向に非常に長く伸びる
   scene.add(sun, sun.target);
-  scene.add(new THREE.HemisphereLight(0x8a93a8, 0x2a2a2a, 0.35));
+  // 太陽円盤 (視直径 0.53°, HDR 輝度)。地形/HLSに隠れれば見えない。
+  const sunDisc = new THREE.Mesh(new THREE.SphereGeometry(SUN_DIST * Math.tan(rad(0.265)), 16, 8),
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(400, 370, 320), fog: false }));
+  scene.add(sunDisc);
+  // 周囲からの反射光 (地形の相互反射/地球照) はごく弱い
+  const hemi = new THREE.HemisphereLight(0x9aa3b5, 0x39383a, 0);
+  const AMBIENT = Math.PI * (world.sun.ambient ?? 0.03);
+  const VIEW_FILL = Math.PI * (world.ui.view_fill ?? 0.12); // 右の3Dビューだけに足す補助光 (カメラ画像には影響しない)
+  hemi.intensity = AMBIENT;
+  scene.add(hemi);
+  function setSun(azRad, elRad) {
+    sunDir.set(Math.cos(elRad) * Math.cos(azRad), Math.cos(elRad) * Math.sin(azRad), Math.sin(elRad));
+    sunDisc.position.copy(sunDir).multiplyScalar(SUN_DIST * 0.95);
+    $('#sun-az-v').textContent = `${((deg(azRad) % 360 + 360) % 360).toFixed(0)}°`;
+    $('#sun-el-v').textContent = `${deg(elRad).toFixed(1)}°`;
+  }
+  setSun(world.sun.az, world.sun.el);
+
+  // ---- 月面の反射: Lommel-Seeliger 則 (レゴリスは太陽が低くても平地が暗くならず、逆光側で明るい) ----
+  //   Lambert: L ∝ μ0        L-S: L ∝ μ0 / (μ0 + μ)   (μ0=入射, μ=出射の余弦; 2倍で垂直入射を Lambert と同じに正規化)
+  const LS_CHUNK = THREE.ShaderChunk.lights_lambert_pars_fragment.replace(
+    'vec3 irradiance = dotNL * directLight.color;',
+    'float dotNV = saturate( dot( geometryNormal, geometryViewDir ) );\n\tvec3 irradiance = ( 2.0 * dotNL / ( dotNL + dotNV + 0.03 ) ) * directLight.color;');
+  function regolithMaterial(params) {
+    const m = new THREE.MeshLambertMaterial(params);
+    m.onBeforeCompile = (sh) => { sh.fragmentShader = sh.fragmentShader.replace('#include <lights_lambert_pars_fragment>', LS_CHUNK); };
+    m.customProgramCacheKey = () => 'regolith-ls';
+    return m;
+  }
 
   // ---- 星 ----
   {
-    const n = 1100, p = new Float32Array(n * 3), c = new Float32Array(n * 3);
+    const n = 700, p = new Float32Array(n * 3), c = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) {
       const u = Math.random() * 2 - 1, a = Math.random() * Math.PI * 2, s = Math.sqrt(1 - u * u);
       p.set([s * Math.cos(a) * 1500, s * Math.sin(a) * 1500, Math.abs(u) * 1500 * 0.9 + 20], i * 3);
-      const b = 0.4 + Math.random() * 0.6; c.set([b, b, b], i * 3);
+      const b = 0.02 + Math.random() * 0.12; c.set([b, b, b], i * 3); // HDR: 日向に合わせた露出ではほぼ写らない
     }
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(p, 3));
@@ -82,30 +110,49 @@ async function main() {
   }
 
   // ---- 地形 ----
+  let shade = null, terrainGeo = null, vIndex = null, vBase = null;
   {
     const geo = new THREE.PlaneGeometry(T.size, T.size, T.n - 1, T.n - 1);
     const pos = geo.attributes.position;
     const col = new Float32Array(pos.count * 3);
+    vIndex = new Int32Array(pos.count); vBase = new Float32Array(pos.count);
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i), y = pos.getY(i);
       const ix = Math.round((x + T.size / 2) / T.res), iy = Math.round((y + T.size / 2) / T.res);
-      pos.setZ(i, H[iy * T.n + ix]);
-      const v = 0.86 + 0.14 * Math.sin(x * 0.11 + 1.3) * Math.sin(y * 0.087 + 0.4) + 0.05 * Math.sin(x * 0.43 + y * 0.31);
-      col.set([v, v, v * 0.98], i * 3);
+      vIndex[i] = iy * T.n + ix;
+      pos.setZ(i, H[vIndex[i]]);
+      vBase[i] = 0.86 + 0.14 * Math.sin(x * 0.11 + 1.3) * Math.sin(y * 0.087 + 0.4) + 0.05 * Math.sin(x * 0.43 + y * 0.31);
+      col.fill(vBase[i], i * 3, i * 3 + 3);
     }
     geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
     geo.computeVertexNormals();
-    const mat = new THREE.MeshLambertMaterial({ map: regolithTexture(T.size / 10), vertexColors: true });
-    const terrain = new THREE.Mesh(geo, mat);
+    terrainGeo = geo;
+    const terrain = new THREE.Mesh(geo, regolithMaterial({ map: regolithTexture(T.size / 10), vertexColors: true }));
     terrain.receiveShadow = true;
+    terrain.castShadow = false; // 地形自身の影はサーバで焼き込み (低い太陽ではシャドウマップだと崩れるため)
     scene.add(terrain);
 
     // 地形の外側 (地平線まで連続した月面)
     const far = new THREE.Mesh(new THREE.PlaneGeometry(6000, 6000),
-      new THREE.MeshLambertMaterial({ map: regolithTexture(600), color: 0xdddddd }));
+      regolithMaterial({ map: regolithTexture(600), color: 0x8a8a8a }));
     far.position.z = -0.12; far.receiveShadow = true;
     scene.add(far);
   }
+  // 地形が落とす影 (0=影,255=日照) を頂点色へ反映
+  function applyShade() {
+    if (!shade) return;
+    const col = terrainGeo.attributes.color, a = col.array;
+    for (let i = 0; i < vIndex.length; i++) {
+      const v = vBase[i] * (0.015 + 0.985 * (shade[vIndex[i]] / 255));
+      a[i * 3] = a[i * 3 + 1] = v; a[i * 3 + 2] = v * 0.98;
+    }
+    col.needsUpdate = true;
+  }
+  async function loadShade() {
+    shade = new Uint8Array(await (await fetch(`/api/shade?${Date.now()}`)).arrayBuffer());
+    applyShade();
+  }
+  await loadShade();
 
   // ---- 岩 (サーバと同じ球で当たり判定。見た目だけ少し歪ませる) ----
   {
@@ -117,7 +164,7 @@ async function main() {
       p.setXYZ(i, x * k, y * k, z * k);
     }
     g.computeVertexNormals();
-    const mesh = new THREE.InstancedMesh(g, new THREE.MeshLambertMaterial({ color: 0x7d7a76 }), world.rocks.length);
+    const mesh = new THREE.InstancedMesh(g, regolithMaterial({ color: 0x8d8984 }), world.rocks.length);
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
     world.rocks.forEach(([x, y, z, r], i) => {
       e.set(Math.random() * 6, Math.random() * 6, Math.random() * 6);
@@ -224,11 +271,12 @@ async function main() {
     el.innerHTML = `<header><span>${c.label}</span><span class="fps"></span></header>`;
     const canvas = document.createElement('canvas'); canvas.width = c.width; canvas.height = c.height;
     el.appendChild(canvas); $('#cams').appendChild(el);
-    const rt = new THREE.WebGLRenderTarget(c.width, c.height, { samples: 4 });
-    rt.texture.colorSpace = THREE.SRGBColorSpace;
+    // HDR(線形・浮動小数点)で描画し、露出→ノイズ→トーンマップ→sRGB をセンサモデルとして自前で適用する
+    const rt = new THREE.WebGLRenderTarget(c.width, c.height, { samples: 4, type: THREE.FloatType });
+    canvas.style.filter = c.blur_px > 0 ? `blur(${c.blur_px}px)` : 'none';
     return {
-      cfg: c, cam, canvas, ctx: canvas.getContext('2d'), rt,
-      buf: new Uint8Array(c.width * c.height * 4), img: new ImageData(c.width, c.height),
+      cfg: c, cam, canvas, ctx: canvas.getContext('2d'), rt, exp: 1.0,
+      buf: new Float32Array(c.width * c.height * 4), img: new ImageData(c.width, c.height),
       period: 1000 / (c.rate_hz || 10), last: -1e9, fpsEl: el.querySelector('.fps'), n: 0, t0: performance.now(),
     };
   });
@@ -249,6 +297,18 @@ async function main() {
     return { cfg: c, idx, pts, posA, colA, frame: null };
   });
   $('#lidar-title').textContent = world.lidars.length ? `LiDAR 点群 (車両上方から) — ${world.lidars.map((l) => l.label).join(' / ')}` : 'LiDAR なし';
+  // ---- 太陽の方位/仰角 UI ----
+  {
+    const az = $('#sun-az'), el = $('#sun-el');
+    az.value = ((deg(world.sun.az) % 360) + 360) % 360; el.value = deg(world.sun.el).toFixed(1);
+    let timer = 0;
+    const push = () => {
+      setSun(rad(+az.value), rad(+el.value));
+      clearTimeout(timer);
+      timer = setTimeout(() => send({ t: 'sun', az_deg: +az.value, el_deg: +el.value }), 250);
+    };
+    az.oninput = push; el.oninput = push;
+  }
   $('#c-points').addEventListener('change', (e) => lidars.forEach((l) => (l.pts.visible = e.target.checked)));
 
   // ------------------------------------------------------------------ 状態
@@ -275,7 +335,8 @@ async function main() {
     ws.onmessage = (ev) => {
       if (typeof ev.data === 'string') {
         const m = JSON.parse(ev.data);
-        if (m.t === 'state') {
+        if (m.t === 'sun') { setSun(m.az, m.el); $('#sun-az').value = m.az_deg; $('#sun-el').value = m.el_deg.toFixed(1); loadShade(); }
+        else if (m.t === 'state') {
           Object.assign(st, m); lastStateTs = performance.now(); st.got++;
           $('#b-auto').classList.toggle('on', !!m.auto);
           updateHud(m);
@@ -373,7 +434,7 @@ async function main() {
     const snap = (half * 2) / 2048;
     const cx = Math.round(mx / snap) * snap, cy = Math.round(my / snap) * snap;
     sun.target.position.set(cx, cy, 0);
-    sun.position.copy(sunDir).multiplyScalar(250).add(sun.target.position);
+    sun.position.copy(sunDir).multiplyScalar(SUN_DIST).add(sun.target.position);
     const s = sun.shadow.camera; s.left = -half; s.right = half; s.top = half; s.bottom = -half;
     s.updateProjectionMatrix();
     sun.target.updateMatrixWorld();
@@ -462,24 +523,88 @@ async function main() {
 
   }
 
-  // ------------------------------------------------------------------ カメラ画像 (RT -> 2D canvas)
+  // ------------------------------------------------------------------ カメラ画像 (HDR RT -> センサモデル -> 2D canvas)
+  const aces = (x) => { const v = (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14); return v < 0 ? 0 : v > 1 ? 1 : v; };
+  const srgb = (x) => (x <= 0.0031308 ? 12.92 * x : 1.055 * Math.pow(x, 1 / 2.4) - 0.055);
+  const gauss = () => Math.random() + Math.random() + Math.random() - 1.5; // 分散 1/4
+  const _v = new THREE.Vector3();
+
+  function sensorPipeline(c) {
+    const cfg = c.cfg, w = cfg.width, h = cfg.height, f = c.buf, out = c.img.data;
+
+    // --- 自動露出 (空=真っ黒の画素は除外、太陽など極端な輝度は頭打ち) ---
+    if (cfg.exposure === 'auto' || cfg.exposure == null) {
+      let sum = 0, cnt = 0;
+      const ls = c.lum || (c.lum = []); ls.length = 0;
+      for (let i = 0; i < w * h; i += 7) {
+        const L = 0.2126 * f[i * 4] + 0.7152 * f[i * 4 + 1] + 0.0722 * f[i * 4 + 2];
+        if (L > 2e-4) { const Lc = Math.min(L, 3); sum += Math.log(Lc); ls.push(Lc); cnt++; }
+      }
+      let target = 1;
+      if (cnt > 20) {
+        ls.sort((a, b) => a - b);
+        const p97 = ls[Math.floor(cnt * 0.97)];
+        // 中間調を狙いつつ、日向の明部(上位3%)が飽和しすぎないよう露出を頭打ち (ハイライト保護)
+        target = Math.min(cfg.auto_exposure_max, 0.16 / Math.exp(sum / cnt), 1.6 / p97);
+      }
+      c.exp += (target * Math.pow(2, cfg.ev_bias || 0) - c.exp) * 0.35;
+    } else c.exp = Number(cfg.exposure) * Math.pow(2, cfg.ev_bias || 0);
+    const e = c.exp, rn2 = cfg.read_noise ** 2, sn = cfg.shot_noise, vg = cfg.vignette;
+
+    for (let y = 0; y < h; y++) {
+      const src = (h - 1 - y) * w * 4, dst = y * w * 4, ny = (y + 0.5) / h * 2 - 1;
+      for (let x = 0; x < w; x++) {
+        const nx = (x + 0.5) / w * 2 - 1, r2 = (nx * nx + ny * ny) / 2;
+        const vig = 1 - vg * r2 * r2 * 1.6 - vg * 0.2 * r2;
+        for (let k = 0; k < 3; k++) {
+          let v = f[src + x * 4 + k] * e * vig;
+          v += 2 * gauss() * Math.sqrt(rn2 + sn * Math.max(v, 0) * 0.04); // 読み出し + ショットノイズ
+          out[dst + x * 4 + k] = 255 * srgb(aces(v)) + 0.5;
+        }
+        out[dst + x * 4 + 3] = 255;
+      }
+    }
+    c.ctx.putImageData(c.img, 0, 0);
+
+    // --- 太陽が直接写っていればグレア (画素の輝度で実際に見えているか判定: 地形/HLSに隠れれば出ない) ---
+    if (cfg.glare > 0) {
+      _v.copy(sunDir).transformDirection(c.cam.matrixWorldInverse);
+      if (_v.z < -0.02) {
+        const t = Math.tan(rad(c.cam.fov) / 2);
+        const px = (_v.x / -_v.z / (t * c.cam.aspect) * 0.5 + 0.5) * w, py = (1 - (_v.y / -_v.z / t * 0.5 + 0.5)) * h;
+        if (px > -w * 0.3 && px < w * 1.3 && py > -h * 0.3 && py < h * 1.3) {
+          let vis = 0;
+          for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+            const xx = Math.round(px) + dx, yy = Math.round(py) + dy;
+            if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+            if (f[((h - 1 - yy) * w + xx) * 4] > 30) vis++;
+          }
+          const a = Math.min(1, vis / 6) * cfg.glare;
+          if (a > 0.02) {
+            const R = w * 0.55, g = c.ctx.createRadialGradient(px, py, 0, px, py, R);
+            g.addColorStop(0, `rgba(255,246,230,${0.95 * a})`); g.addColorStop(0.05, `rgba(255,240,215,${0.6 * a})`);
+            g.addColorStop(0.25, `rgba(255,225,190,${0.16 * a})`); g.addColorStop(1, 'rgba(255,220,180,0)');
+            c.ctx.globalCompositeOperation = 'lighter'; c.ctx.fillStyle = g; c.ctx.fillRect(0, 0, w, h);
+            c.ctx.globalCompositeOperation = 'source-over';
+          }
+        }
+      }
+    }
+  }
+
   function renderCameras(now) {
     for (const l of lidars) l.pts.visible = false; // 点群をカメラ画像に写さない
-    const prevAuto = renderer.shadowMap.autoUpdate;
     for (const c of cams) {
       if (now - c.last < c.period) continue;
       c.last = now;
       renderer.setRenderTarget(c.rt);
       renderer.render(scene, c.cam);
       renderer.readRenderTargetPixels(c.rt, 0, 0, c.cfg.width, c.cfg.height, c.buf);
-      const w = c.cfg.width, h = c.cfg.height, d = c.img.data, s = c.buf;
-      for (let y = 0; y < h; y++) d.set(s.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4); // 上下反転
-      c.ctx.putImageData(c.img, 0, 0);
+      sensorPipeline(c);
       c.n++;
       if (now - c.t0 > 1000) { c.fpsEl.textContent = `${(c.n * 1000 / (now - c.t0)).toFixed(0)} Hz`; c.n = 0; c.t0 = now; }
     }
     renderer.setRenderTarget(null);
-    renderer.shadowMap.autoUpdate = prevAuto;
     const on = $('#c-points').checked;
     for (const l of lidars) l.pts.visible = on;
   }
@@ -492,7 +617,9 @@ async function main() {
     updateSunShadow();
     updateMainCamera();
     renderer.shadowMap.needsUpdate = true;
+    hemi.intensity = AMBIENT + VIEW_FILL;
     renderer.render(scene, mainCam);
+    hemi.intensity = AMBIENT;
     renderCameras(now);
     drawLidar();
     requestAnimationFrame(frame);
