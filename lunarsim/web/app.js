@@ -175,8 +175,14 @@ async function main() {
     scene.add(mesh);
   }
 
-  // ---- HLS (円筒近似 + ノーズ + ハッチ) ----
-  {
+  // ---- HLS (model: cylinder=単純な円柱 / detailed=ノーズ+ハッチ) ----
+  if (hls.model !== 'detailed') {
+    const g = new THREE.Mesh(new THREE.CylinderGeometry(hls.radius, hls.radius, hls.height, 48),
+      new THREE.MeshLambertMaterial({ color: hls.color || '#d8dade' }));
+    g.rotation.x = Math.PI / 2; g.position.set(hls.x, hls.y, T.hls_z0 + hls.height / 2);
+    g.castShadow = g.receiveShadow = true;
+    scene.add(g);
+  } else {
     const g = new THREE.Group();
     g.position.set(hls.x, hls.y, T.hls_z0);
     const metal = new THREE.MeshLambertMaterial({ color: 0xd8dade });
@@ -217,7 +223,14 @@ async function main() {
   rover.rotation.order = 'ZYX'; // R = Rz(yaw) Ry(pitch) Rx(roll)
   scene.add(rover);
   const wheels = [];
-  {
+  if (rcfg.model !== 'detailed') {
+    // 単純な箱: 下面は地面から clearance、車体座標の原点は 地面+wheel_radius
+    const box = new THREE.Mesh(new THREE.BoxGeometry(rcfg.length, rcfg.width, rcfg.height),
+      new THREE.MeshLambertMaterial({ color: rcfg.color || '#e9eaec' }));
+    box.position.set(0, 0, rcfg.clearance - rcfg.wheel_radius + rcfg.height / 2);
+    box.castShadow = box.receiveShadow = true;
+    rover.add(box);
+  } else {
     const L = rcfg.length, W = rcfg.width, wr = rcfg.wheel_radius;
     const white = new THREE.MeshLambertMaterial({ color: 0xe9eaec });
     const grey = new THREE.MeshLambertMaterial({ color: 0x55595f });

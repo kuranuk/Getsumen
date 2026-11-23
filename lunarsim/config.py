@@ -34,12 +34,18 @@ DEFAULTS: dict = {
     "hls": {
         "x": 0.0, "y": 0.0, "radius": 4.5, "height": 20.0,
         "pad_radius": 18.0,        # HLS周囲の平坦な着陸パッド半径 [m]
-        "hatch_azimuth_deg": 180.0,  # ハッチ(乗降口)の向き (世界座標, x軸から反時計回り)
+        "model": "cylinder",       # cylinder=単純な円柱 / detailed=ノーズ・ハッチ付き
+        "color": "#d8dade",
+        "hatch_azimuth_deg": 180.0,  # ハッチ(乗降口)の向き (detailed のみ描画)
         "hatch_height": 4.0,
     },
     "rover": {
         "start": {"x": -55.0, "y": -25.0, "yaw_deg": 25.0},
-        "length": 6.0, "width": 4.0, "wheel_radius": 0.6,
+        "model": "box",            # box=単純な箱 / detailed=キャビン+6輪
+        "color": "#e9eaec",
+        "length": 6.0, "width": 4.0, "height": 2.4,   # 箱の寸法 [m] (車体座標 x前/y左/z上)
+        "clearance": 0.6,          # 地面から箱の下面まで [m]
+        "wheel_radius": 0.6,       # 接地高さ・車輪径 (運動モデル/ライダー高さの基準)
         "max_speed": 2.0,          # [m/s]
         "max_yaw_rate_deg": 25.0,  # [deg/s]
         "accel": 0.6,              # [m/s^2]

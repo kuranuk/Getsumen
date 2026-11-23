@@ -47,15 +47,21 @@ hls:
   radius: 4.5             # 円筒近似の半径 [m]
   height: 20.0            # ライダーに映る高さ [m]
   pad_radius: 18.0        # 周囲の平坦パッド半径 [m]
-  hatch_azimuth_deg: 180.0  # 乗降ハッチの向き (描画のみ)
+  model: cylinder        # cylinder=単純な円柱 (ライダーの当たり判定と同一形状) / detailed=ノーズ・ハッチ付き
+  color: "#d8dade"
+  hatch_azimuth_deg: 180.0  # 乗降ハッチの向き (detailed のみ描画)
   hatch_height: 4.0
 
 # ---------------- 有人与圧ローバー ----------------
 rover:
   start: {x: -55.0, y: -25.0, yaw_deg: 25.0}
-  length: 6.0
+  model: box              # box=単純な箱 / detailed=キャビン+6輪
+  color: "#e9eaec"
+  length: 6.0             # 箱の寸法 [m]
   width: 4.0
-  wheel_radius: 0.6
+  height: 2.4
+  clearance: 0.6          # 地面から箱の下面まで [m]
+  wheel_radius: 0.6       # 接地面の高さの基準 (車体座標の原点=地面+この値)
   max_speed: 2.0          # [m/s]
   max_yaw_rate_deg: 25.0  # [deg/s]
   accel: 0.6              # [m/s^2]
@@ -68,7 +74,7 @@ sensors:
   cameras:
     - name: front
       label: 前 (Front)
-      mount: {x: 2.9, y: 0.0, z: 1.3, yaw_deg: 0, pitch_deg: -3}
+      mount: {x: 3.0, y: 0.0, z: 1.3, yaw_deg: 0, pitch_deg: -3}
       fov_deg: 90          # 水平画角
       width: 320
       height: 240
@@ -84,21 +90,21 @@ sensors:
       blur_px: 0.6         # 光学ボケ [px]
     - name: rear
       label: 後 (Rear)
-      mount: {x: -2.9, y: 0.0, z: 1.3, yaw_deg: 180, pitch_deg: -3}
+      mount: {x: -3.0, y: 0.0, z: 1.3, yaw_deg: 180, pitch_deg: -3}
       fov_deg: 90
       width: 320
       height: 240
       rate_hz: 10
     - name: left
       label: 左 (Left)
-      mount: {x: 0.0, y: 1.6, z: 2.0, yaw_deg: 90, pitch_deg: -3}
+      mount: {x: 0.0, y: 2.0, z: 2.0, yaw_deg: 90, pitch_deg: -3}   # 箱の側面 (y=width/2)
       fov_deg: 90
       width: 320
       height: 240
       rate_hz: 10
     - name: right
       label: 右 (Right)
-      mount: {x: 0.0, y: -1.6, z: 2.0, yaw_deg: -90, pitch_deg: -3}
+      mount: {x: 0.0, y: -2.0, z: 2.0, yaw_deg: -90, pitch_deg: -3}
       fov_deg: 90
       width: 320
       height: 240
