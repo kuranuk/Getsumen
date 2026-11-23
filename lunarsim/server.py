@@ -98,7 +98,7 @@ class SimServer:
             dt = min(now - last, 0.1)
             last = now
             v, w = self.cmd
-            if now - self.cmd_time > 0.5:  # 指令途絶 -> 停止
+            if now - self.cmd_time > 1.0:  # 指令途絶 -> 停止
                 v = w = 0.0
             self.rover.step(dt, v, w)
             self.sim_t += dt

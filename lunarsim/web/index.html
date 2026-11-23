@@ -34,9 +34,16 @@
         <span id="conn" class="conn off">接続中…</span>
       </div>
       <div class="hud-box help">
-        W/S または ↑/↓: 前進/後退 ・ A/D または ←/→: 左/右旋回 ・ Shift: 低速 ・ Space: 停止<br>
+        W/S または ↑/↓: 前進/後退 ・ A/D または ←/→: 左/右旋回 ・ Shift: 低速 ・ Space: 停止(自動も解除)<br>
         マウスドラッグ: 視点回転 ・ ホイール: ズーム ・ V: 視点切替 ・ R: リセット
       </div>
+    </div>
+    <div id="pad" class="hud-box" title="キーボード: W/A/S/D または矢印キー ・ ここを押し続けても走行できます">
+      <div class="pad-grid">
+        <span></span><button data-act="fwd">▲<small>W</small></button><span></span>
+        <button data-act="left">◀<small>A</small></button><button data-act="back">▼<small>S</small></button><button data-act="right">▶<small>D</small></button>
+      </div>
+      <label><input type="checkbox" id="pad-slow"> 低速 (Shift)</label>
     </div>
   </main>
 </div>

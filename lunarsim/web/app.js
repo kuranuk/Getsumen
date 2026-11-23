@@ -420,23 +420,58 @@ async function main() {
   }
 
   // ------------------------------------------------------------------ 入力
-  const keys = new Set();
+  // キーボードは e.code で判定 (配列/IME に依存しない)。キャプチャ段階で処理し、
+  // スライダ/ボタンにフォーカスがあっても矢印キー・Space を奪われない。
+  const KEYMAP = { KeyW: 'fwd', ArrowUp: 'fwd', KeyS: 'back', ArrowDown: 'back', KeyA: 'left', ArrowLeft: 'left', KeyD: 'right', ArrowRight: 'right' };
+  const act = new Set();       // 押されている操作: fwd/back/left/right (キーボードと画面パッドで共用)
+  let slow = false;
+  function sendDrive() {
+    const f = (act.has('fwd') ? 1 : 0) - (act.has('back') ? 1 : 0);
+    const t = (act.has('left') ? 1 : 0) - (act.has('right') ? 1 : 0);
+    const k = slow || $('#pad-slow').checked ? 0.3 : 1.0;
+    send({ t: 'drive', v: f * k, w: t * k });
+    return f !== 0 || t !== 0;
+  }
+  function setAct(a, on) {
+    const had = act.has(a);
+    on ? act.add(a) : act.delete(a);
+    if (had !== on) sendDrive(); // 押した/離した瞬間に即送信 (50ms周期を待たない)
+    document.querySelectorAll('#pad [data-act]').forEach((b) => b.classList.toggle('on', act.has(b.dataset.act)));
+  }
+  function stopAll() { act.clear(); setAct('', false); send({ t: 'drive', v: 0, w: 0 }); }
   addEventListener('keydown', (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.target.closest && e.target.closest('input[type=text], textarea, select')) return;
+    slow = e.shiftKey;
+    const a = KEYMAP[e.code];
+    if (a) { e.preventDefault(); e.stopPropagation(); setAct(a, true); return; }
+    if (e.code === 'Space') { e.preventDefault(); e.stopPropagation(); send({ t: 'auto', on: false }); stopAll(); return; }
     if (e.repeat) return;
-    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-    keys.add(k);
-    if (k === 'r') send({ t: 'reset' });
-    if (k === 'v') cycleView();
-    if (k === ' ') e.preventDefault();
+    if (e.code === 'KeyR') send({ t: 'reset' });
+    else if (e.code === 'KeyV') cycleView();
+  }, true);
+  addEventListener('keyup', (e) => {
+    slow = e.shiftKey;
+    const a = KEYMAP[e.code];
+    if (a) { e.preventDefault(); setAct(a, false); }
+    if (e.code === 'Space') e.preventDefault(); // ボタンにフォーカスがあっても click させない
+  }, true);
+  addEventListener('blur', stopAll);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) stopAll(); });
+  // ボタン/スライダ操作後はフォーカスを外し、以後のキー入力が確実に操縦に届くようにする
+  document.addEventListener('click', (e) => { if (e.target.matches && e.target.matches('button')) e.target.blur(); });
+  document.addEventListener('change', (e) => { if (e.target.matches && e.target.matches('input')) e.target.blur(); });
+  // 画面パッド (マウス/タッチで押している間だけ走行)
+  document.querySelectorAll('#pad [data-act]').forEach((b) => {
+    const a = b.dataset.act;
+    b.addEventListener('pointerdown', (e) => { e.preventDefault(); b.setPointerCapture(e.pointerId); setAct(a, true); });
+    for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) b.addEventListener(ev, () => setAct(a, false));
   });
-  addEventListener('keyup', (e) => keys.delete(e.key.length === 1 ? e.key.toLowerCase() : e.key));
-  addEventListener('blur', () => keys.clear());
-  setInterval(() => {
-    const f = (keys.has('w') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('s') || keys.has('ArrowDown') ? 1 : 0);
-    const t = (keys.has('a') || keys.has('ArrowLeft') ? 1 : 0) - (keys.has('d') || keys.has('ArrowRight') ? 1 : 0);
-    const k = keys.has('Shift') ? 0.3 : 1.0;
-    const manual = f !== 0 || t !== 0 || keys.has(' ');
-    if (manual || sendTimer++ % 10 === 0) send({ t: 'drive', v: f * k, w: t * k });
+  $('#pad-slow').addEventListener('change', (e) => e.target.blur());
+  window.focus();
+  setInterval(() => { // 押している間は 50ms ごとに指令を再送 (途絶えると車両は止まる)
+    const moving = act.size > 0;
+    if (moving || sendTimer++ % 10 === 0) sendDrive();
   }, 50);
   $('#b-auto').onclick = () => send({ t: 'auto', on: !st.auto });
   $('#b-reset').onclick = () => send({ t: 'reset' });
