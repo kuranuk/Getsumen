@@ -52,7 +52,9 @@ async function main() {
   // 周囲からの反射光 (地形の相互反射/地球照) はごく弱い
   const hemi = new THREE.HemisphereLight(0x9aa3b5, 0x39383a, 0);
   const AMBIENT = Math.PI * (world.sun.ambient ?? 0.03);
-  const VIEW_FILL = Math.PI * (world.ui.view_fill ?? 0.12); // 右の3Dビューだけに足す補助光 (カメラ画像には影響しない)
+  // 右の3Dビューだけに足す補助光。地形/岩の自己発光として足すので、HLSやローバーの影側は真っ黒のまま (カメラ画像にも影響しない)
+  const FILL_RAD = 0.14 * (world.ui.view_fill ?? 0.12);
+  const fillMats = [];
   hemi.intensity = AMBIENT;
   scene.add(hemi);
   function setSun(azRad, elRad) {
@@ -72,6 +74,7 @@ async function main() {
     const m = new THREE.MeshLambertMaterial(params);
     m.onBeforeCompile = (sh) => { sh.fragmentShader = sh.fragmentShader.replace('#include <lights_lambert_pars_fragment>', LS_CHUNK); };
     m.customProgramCacheKey = () => 'regolith-ls';
+    m.emissive = new THREE.Color(0xffffff); m.emissiveMap = params.map || null; m.emissiveIntensity = 0; fillMats.push(m);
     return m;
   }
 
@@ -704,9 +707,9 @@ async function main() {
     updateSunShadow();
     updateMainCamera();
     renderer.shadowMap.needsUpdate = true;
-    hemi.intensity = AMBIENT + VIEW_FILL;
+    for (const m of fillMats) m.emissiveIntensity = FILL_RAD;
     renderer.render(scene, mainCam);
-    hemi.intensity = AMBIENT;
+    for (const m of fillMats) m.emissiveIntensity = 0;
     renderCameras(now);
     drawLidar();
     requestAnimationFrame(frame);

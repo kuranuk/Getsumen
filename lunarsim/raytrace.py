@@ -338,7 +338,7 @@ class RayTracer:
             n /= np.linalg.norm(n, axis=1, keepdims=True)
             q = p + n * 0.05
             vis = (~w.terrain_occluded(q, L)).astype(np.float32)
-            rgb[m3] = self._shade(np.tile(self.hls_albedo, (m3.size, 1)), n, V[m3], L, vis)
+            rgb[m3] = self._shade(np.tile(self.hls_albedo, (m3.size, 1)), n, V[m3], L, vis, lambert=True)
 
         # --- 恒星 (空の画素だけに点広がり関数で加算) ---
         if cam.stars and sky.any():
@@ -349,11 +349,12 @@ class RayTracer:
             img = img.reshape(cam.h, cam.ss, cam.w, cam.ss, 3).mean(axis=(1, 3))
         return img.astype(np.float16)
 
-    def _shade(self, albedo, n, V, L, vis):
-        """Lommel-Seeliger 反射: 垂直入射で Lambert と同じになるよう 2*mu0/(mu0+mu) で正規化."""
+    def _shade(self, albedo, n, V, L, vis, lambert=False):
+        """Lommel-Seeliger 反射 (レゴリス): 垂直入射で Lambert と同じになるよう 2*mu0/(mu0+mu) で正規化.
+        lambert=True は人工物(塗装面)用。太陽と反対側は直接光ゼロ (反射光は ambient のみ)."""
         mu0 = np.clip(n @ L, 0.0, 1.0)
         mu = np.clip((n * V).sum(1), 0.0, 1.0)
-        ls = 2.0 * mu0 / (mu0 + mu + 0.03)
+        ls = mu0 if lambert else 2.0 * mu0 / (mu0 + mu + 0.03)
         albedo = np.asarray(albedo, np.float32)
         if albedo.ndim == 1:
             albedo = albedo[:, None]
