@@ -327,7 +327,6 @@ async function main() {
     rover.add(pts); // 点群は車体座標系
     return { cfg: c, idx, pts, posA, colA, frame: null };
   });
-  $('#lidar-title').textContent = world.lidars.length ? `LiDAR 点群 (車両上方から) — ${world.lidars.map((l) => l.label).join(' / ')}` : 'LiDAR なし';
   // ---- 3Dビューの明るさ ----
   {
     const sl = $('#view-exp'), val = $('#view-exp-v');
@@ -498,8 +497,6 @@ async function main() {
     if (moving || sendTimer++ % 10 === 0) sendDrive();
   }, 50);
   $('#b-auto').onclick = () => send({ t: 'auto', on: !st.auto });
-  $('#b-reset').onclick = () => send({ t: 'reset' });
-  $('#b-view').onclick = () => cycleView();
 
   // ---- 視点 (追従 / 俯瞰) ----
   const views = [
@@ -507,7 +504,7 @@ async function main() {
     { name: '俯瞰', az: -2.2, el: 0.5, dist: 100, follow: false },
   ];
   let vi = 0;
-  function cycleView() { vi = (vi + 1) % views.length; $('#b-view').textContent = `視点: ${views[vi].name}`; }
+  function cycleView() { vi = (vi + 1) % views.length; } // V キーで 追従/俯瞰 を切替 (ボタンは非表示)
   const dom = renderer.domElement;
   let drag = null;
   dom.addEventListener('pointerdown', (e) => { drag = [e.clientX, e.clientY]; dom.setPointerCapture(e.pointerId); });
@@ -614,7 +611,6 @@ async function main() {
       const fp = footprints.find((x) => x.name === l.cfg.name);
       info.push(`${l.cfg.name}: ${f.n} pts${fp ? `  地面 ${fp.near.toFixed(1)}〜${fp.far.toFixed(1)} m` : ''}`);
     }
-    $('#lidar-info').textContent = `${info.join(' | ')}  表示半径 ${viewRange.toFixed(0)} m`;
 
     // 自車
     const L = rcfg.length * scale, Wd = rcfg.width * scale;
