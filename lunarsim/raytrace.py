@@ -125,7 +125,7 @@ class RayTracer:
         self.rock_albedo = (0.20 * (0.75 + 0.5 * rng.random(len(world.rocks)))).astype(np.float32)
         self.star_cache: dict[float, StarField] = {}
         self.cams = {c["name"]: CameraModel(c, i) for i, c in enumerate(cfg["sensors"]["cameras"])
-                     if c.get("render", "raytrace") == "raytrace"}
+                     if c.get("render", "raster") == "raytrace"}
 
     # ------------------------------------------------------------ 交差判定
     def _march_terrain(self, o, d, tmin, tmax):

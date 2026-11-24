@@ -85,7 +85,8 @@ async function main() {
     return m;
   }
 
-  // ---- 星 ----
+  // ---- 星 (3Dビューの装飾。物理的な明るさではないので、カメラ画像には写さない) ----
+  let starPoints = null;
   {
     const n = 700, p = new Float32Array(n * 3), c = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) {
@@ -96,7 +97,8 @@ async function main() {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(p, 3));
     g.setAttribute('color', new THREE.BufferAttribute(c, 3));
-    scene.add(new THREE.Points(g, new THREE.PointsMaterial({ size: 1.3, sizeAttenuation: false, vertexColors: true, fog: false })));
+    starPoints = new THREE.Points(g, new THREE.PointsMaterial({ size: 1.3, sizeAttenuation: false, vertexColors: true, fog: false }));
+    scene.add(starPoints);
   }
 
   // ---- レゴリス テクスチャ ----
@@ -301,7 +303,7 @@ async function main() {
     $('#cams').style.setProperty('--cols', world.ui.camera_grid_columns || 4);
     $('#cams').appendChild(el);
     // HDR(線形・浮動小数点)で描画し、露出→ノイズ→トーンマップ→sRGB をセンサモデルとして自前で適用する
-    const raytraced = (c.render || 'raytrace') !== 'raster'; // true: サーバのレイトレーシング画像を受信 / false: ブラウザで描画
+    const raytraced = c.render === 'raytrace'; // true: サーバのレイトレーシング画像を受信 / false: ブラウザで描画
     el.querySelector('header span').insertAdjacentHTML('beforeend', ` <small style="opacity:.7">${raytraced ? 'RT' : 'raster'}</small>`);
     const rt = raytraced ? null : new THREE.WebGLRenderTarget(c.width, c.height, { samples: 4, type: THREE.FloatType });
     canvas.style.filter = c.blur_px > 0 ? `blur(${c.blur_px}px)` : 'none';
@@ -727,6 +729,7 @@ async function main() {
 
   function renderCameras(now) {
     for (const l of lidars) l.pts.visible = false; // 点群をカメラ画像に写さない
+    if (starPoints) starPoints.visible = false;
     for (const c of cams) {
       if (!c.rt || now - c.last < c.period) continue;
       c.last = now;
@@ -738,6 +741,7 @@ async function main() {
       if (now - c.t0 > 1000) { c.fpsEl.textContent = `${(c.n * 1000 / (now - c.t0)).toFixed(0)} Hz`; c.n = 0; c.t0 = now; }
     }
     renderer.setRenderTarget(null);
+    if (starPoints) starPoints.visible = true;
     const on = $('#c-points').checked;
     for (const l of lidars) l.pts.visible = on;
   }

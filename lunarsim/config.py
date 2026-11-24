@@ -95,8 +95,8 @@ def _validate(cfg: dict) -> None:
         c.setdefault("vignette", 0.35)       # 周辺減光 0-1
         c.setdefault("glare", 0.8)           # 太陽直視時のグレア強度 0-1
         c.setdefault("blur_px", 0.6)         # 光学ボケ [px]
-        # 画像生成: raytrace=サーバ側(numpy)のレイトレーシング / raster=ブラウザのCG描画 (高速・近似)
-        c.setdefault("render", "raytrace")
+        # 画像生成: raster=ブラウザのGPU描画 (既定・高速) / raytrace=サーバ側(numpy)のレイトレーシング (高精度・重い)
+        c.setdefault("render", "raster")
         c.setdefault("supersample", 1)       # レイトレの 1画素あたり n x n サンプル (エッジの滑らかさ。n^2倍の計算)
         c.setdefault("stars", True)          # 恒星 (等級に基づく放射輝度。露出が低いと写らない)
         c.setdefault("star_limit_mag", 7.0)  # 描く限界等級
