@@ -3,11 +3,7 @@ import unittest
 
 import numpy as np
 
-from lunarsim.config import load_config
-from lunarsim.lidar import FlashLidar
-from lunarsim.raytrace import RayTracer
-from lunarsim.rover import Rover
-from lunarsim.world import World
+from server import FlashLidar, RayTracer, Rover, World, load_config
 
 
 class ConfigTests(unittest.TestCase):
