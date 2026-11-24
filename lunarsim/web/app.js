@@ -445,12 +445,12 @@ async function main() {
   // キーボードは e.code で判定 (配列/IME に依存しない)。キャプチャ段階で処理し、
   // スライダ/ボタンにフォーカスがあっても矢印キー・Space を奪われない。
   const KEYMAP = { KeyW: 'fwd', ArrowUp: 'fwd', KeyS: 'back', ArrowDown: 'back', KeyA: 'left', ArrowLeft: 'left', KeyD: 'right', ArrowRight: 'right' };
-  const act = new Set();       // 押されている操作: fwd/back/left/right (キーボードと画面パッドで共用)
+  const act = new Set();       // 押されている操作: fwd/back/left/right
   let slow = false;
   function sendDrive() {
     const f = (act.has('fwd') ? 1 : 0) - (act.has('back') ? 1 : 0);
     const t = (act.has('left') ? 1 : 0) - (act.has('right') ? 1 : 0);
-    const k = slow || $('#pad-slow').checked ? 0.3 : 1.0;
+    const k = slow ? 0.3 : 1.0;
     send({ t: 'drive', v: f * k, w: t * k });
     return f !== 0 || t !== 0;
   }
@@ -458,7 +458,6 @@ async function main() {
     const had = act.has(a);
     on ? act.add(a) : act.delete(a);
     if (had !== on) sendDrive(); // 押した/離した瞬間に即送信 (50ms周期を待たない)
-    document.querySelectorAll('#pad [data-act]').forEach((b) => b.classList.toggle('on', act.has(b.dataset.act)));
   }
   function stopAll() { act.clear(); setAct('', false); send({ t: 'drive', v: 0, w: 0 }); }
   addEventListener('keydown', (e) => {
@@ -483,13 +482,6 @@ async function main() {
   // ボタン/スライダ操作後はフォーカスを外し、以後のキー入力が確実に操縦に届くようにする
   document.addEventListener('click', (e) => { if (e.target.matches && e.target.matches('button')) e.target.blur(); });
   document.addEventListener('change', (e) => { if (e.target.matches && e.target.matches('input')) e.target.blur(); });
-  // 画面パッド (マウス/タッチで押している間だけ走行)
-  document.querySelectorAll('#pad [data-act]').forEach((b) => {
-    const a = b.dataset.act;
-    b.addEventListener('pointerdown', (e) => { e.preventDefault(); b.setPointerCapture(e.pointerId); setAct(a, true); });
-    for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) b.addEventListener(ev, () => setAct(a, false));
-  });
-  $('#pad-slow').addEventListener('change', (e) => e.target.blur());
   window.focus();
   setInterval(() => { // 押している間は 50ms ごとに指令を再送 (途絶えると車両は止まる)
     const moving = act.size > 0;

@@ -30,8 +30,3 @@ label { color:var(--dim); user-select:none; }
 @media (max-width: 900px) { #app { grid-template-columns: 1fr; grid-template-rows: 55vh 45vh; } #left { order:2; overflow:auto; } }
 input[type=range] { vertical-align:middle; width:90px; accent-color:var(--acc); }
 .val { display:inline-block; min-width:3.2em; color:var(--fg); font-variant-numeric:tabular-nums; }
-#pad { position:absolute; right:12px; bottom:12px; text-align:center; user-select:none; touch-action:none; }
-.pad-grid { display:grid; grid-template-columns:repeat(3, 52px); gap:4px; margin-bottom:4px; }
-.pad-grid button { height:46px; font-size:16px; line-height:1; padding:0; display:flex; flex-direction:column; align-items:center; justify-content:center; }
-.pad-grid small { font-size:10px; color:var(--dim); }
-.pad-grid button.on { background:#0d4a66; border-color:var(--acc); }

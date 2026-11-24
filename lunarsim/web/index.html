@@ -30,13 +30,10 @@
         <label title="太陽の仰角 (南極では最大 約1.5°)">仰角 <input type="range" id="sun-el" min="0" max="3" step="0.1" value="1.5"><span id="sun-el-v" class="val"></span></label>
         <span id="conn" class="conn off">接続中…</span>
       </div>
-    </div>
-    <div id="pad" class="hud-box" title="キーボード: W/A/S/D または矢印キー ・ ここを押し続けても走行できます">
-      <div class="pad-grid">
-        <span></span><button data-act="fwd">▲<small>W</small></button><span></span>
-        <button data-act="left">◀<small>A</small></button><button data-act="back">▼<small>S</small></button><button data-act="right">▶<small>D</small></button>
+      <div class="hud-box help">
+        W/S または ↑/↓: 前進/後退 ・ A/D または ←/→: 左/右旋回 ・ Shift: 低速 ・ Space: 停止<br>
+        マウスドラッグ: 視点回転 ・ ホイール: ズーム ・ V: 視点切替 ・ R: リセット
       </div>
-      <label><input type="checkbox" id="pad-slow"> 低速 (Shift)</label>
     </div>
   </main>
 </div>
