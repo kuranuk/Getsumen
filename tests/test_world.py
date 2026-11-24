@@ -63,8 +63,6 @@ class RayTraceTests(unittest.TestCase):
     def setUpClass(cls):
         from lunarsim.raytrace import RayTracer
         cls.cfg = load_config("config/default.yaml")
-        for c in cls.cfg["sensors"]["cameras"]:
-            c["render"] = "raytrace"  # 既定は raster。レイトレは明示指定で使う
         cls.world = World(cls.cfg)
         cls.rt = RayTracer(cls.cfg, cls.world)
         cls.shade = cls.world.bake_shade()

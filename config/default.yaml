@@ -79,9 +79,8 @@ sensors:
       fov_deg: 90          # 水平画角
       width: 320
       height: 240
-      rate_hz: 10          # 更新Hz (rasterなら10以上も可。raytraceは重いので2程度)
-      render: raster       # raster=ブラウザのGPU描画 (高速) / raytrace=サーバでレイトレーシング (高精度・重い)
-      # --- raytrace 時のみ有効 ---
+      rate_hz: 2           # レイトレーシングは計算が重いので低め (CPUに応じて上げる)
+      render: raytrace     # raytrace=サーバでレイトレーシング / raster=ブラウザCG描画(高速・近似)
       supersample: 1       # 1画素あたり n x n サンプル (2で滑らか・4倍遅い)
       stars: true          # 恒星 (等級ベース。日向に合わせた露出では写らない)
       star_limit_mag: 7.0
@@ -101,7 +100,7 @@ sensors:
       fov_deg: 90
       width: 320
       height: 240
-      rate_hz: 10
+      rate_hz: 2
     - name: right
       label: 右 (Right)
       grid: {row: 2, col: 3, span: 2}
@@ -109,7 +108,7 @@ sensors:
       fov_deg: 90
       width: 320
       height: 240
-      rate_hz: 10
+      rate_hz: 2
     # 後ろカメラは2台 (左後ろ・右後ろ。少し外向きに振って死角を減らす)
     - name: rear_left
       label: 後ろ左 (Rear L)
@@ -118,7 +117,7 @@ sensors:
       fov_deg: 90
       width: 320
       height: 240
-      rate_hz: 10
+      rate_hz: 2
     - name: rear_right
       label: 後ろ右 (Rear R)
       grid: {row: 3, col: 3, span: 2}
@@ -126,7 +125,7 @@ sensors:
       fov_deg: 90
       width: 320
       height: 240
-      rate_hz: 10
+      rate_hz: 2
 
   # 前面フラッシュライダー (視野内を一括照射 → 距離画像 → 点群)
   lidars:

@@ -39,9 +39,7 @@ class SimServer:
         # 重い計算はワーカープロセスで (BLAS等のスレッドは1に固定して過剰な競合を避ける)
         for k in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
             os.environ.setdefault(k, "1")
-        uses_rt = bool(self.raytracer.cams)
-        # レイトレカメラがあれば CPU 数ぶん、無ければ (ライダーと影の再計算だけなので) 2 プロセス
-        n_workers = int(cfg["simulation"].get("workers") or (max(1, os.cpu_count() or 2) if uses_rt else 2))
+        n_workers = int(cfg["simulation"].get("workers") or max(1, (os.cpu_count() or 2)))
         self.pool = ProcessPoolExecutor(n_workers, mp_context=mp.get_context("spawn"),
                                         initializer=workers.init, initargs=(cfg,))
         self.sun_version = 0
