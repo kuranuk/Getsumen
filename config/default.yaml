@@ -1,5 +1,10 @@
 # ============================================================
-#  月面ロボットシミュレータ 設定ファイル
+#  月面ロボットシミュレータ 設定ファイル (既定値はすべてこのファイル)
+#
+#  別の設定ファイルを渡すと、このファイルに「差分だけ」上書きされます:
+#      python -m lunarsim -c my.yaml        # 変えたい項目だけ書けばよい
+#  (カメラ/ライダーのリストは、書いた場合に丸ごと置き換わります)
+#
 #  座標系(車体): x=前 / y=左 / z=上 (原点=車体中心, 車軸高さ)
 #  mount.yaw_deg   : 左向き回転が正 (0=正面, 90=左, 180=後ろ, -90=右)
 #  mount.pitch_deg : 上向きが正 (下向きに傾けるなら負)
@@ -13,8 +18,9 @@ server:
 simulation:
   physics_hz: 50
   state_hz: 30
+  workers: 0              # 重い計算(レイトレ/ライダー)のプロセス数。0=CPU数
 
-# ---------------- 月面 (マイルド) ----------------
+# ---------------- 月面 (南極ハイランドの公開統計に基づく合成地形) ----------------
 world:
   seed: 7                 # 同じseedなら同じ地形
   size: 240.0             # 地形一辺 [m]
@@ -23,7 +29,6 @@ world:
     amplitude: 0.35       # 標準偏差 [m]
     wavelength: 45.0      # 代表波長 [m]
     roughness: 0.04       # 細かい凹凸 [m]
-  # --- 月南極(極域ハイランド)の公開統計に基づく (LOLA / LROC / Diviner など) ---
   craters:                # 重なり合った飽和気味のクレータ群 (累積 N(>D)=1.54*sat*D^-2 /m^2)
     diameter_min: 4.0     # [m]
     diameter_max: 80.0    # [m]
@@ -40,22 +45,18 @@ world:
     elevation_deg: 1.5    # 影の長さは 高さ/tan(仰角) (20m のHLSで約760m)
     ambient: 0.03         # 地形からの相互反射/地球照 (影の中の明るさ)
 
-# ---------------- HLS (有人着陸機) ----------------
+# ---------------- HLS (有人着陸機。単純な円柱) ----------------
 hls:
   x: 0.0
   y: 0.0
-  radius: 4.5             # 円筒近似の半径 [m]
-  height: 20.0            # ライダーに映る高さ [m]
+  radius: 4.5             # [m]
+  height: 20.0            # [m]
   pad_radius: 18.0        # 周囲の平坦パッド半径 [m]
-  model: cylinder        # cylinder=単純な円柱 (ライダーの当たり判定と同一形状) / detailed=ノーズ・ハッチ付き
   color: "#d8dade"
-  hatch_azimuth_deg: 180.0  # 乗降ハッチの向き (detailed のみ描画)
-  hatch_height: 4.0
 
-# ---------------- 有人与圧ローバー ----------------
+# ---------------- 有人与圧ローバー (単純な箱) ----------------
 rover:
   start: {x: -55.0, y: -25.0, yaw_deg: 25.0}
-  model: box              # box=単純な箱 / detailed=キャビン+6輪
   color: "#e9eaec"
   length: 6.0             # 箱の寸法 [m]
   width: 4.0
@@ -69,64 +70,48 @@ rover:
 
 # ---------------- センサ ----------------
 sensors:
-  # カメラ: 前/左/右/後ろ。増減・名称変更は自由 (画面に自動で反映)
+  # カメラ画像はサーバでレイトレーシングし、ブラウザで実機センサ風の処理を加える。
+  # camera_defaults は全カメラ共通の既定値 (cameras の各項目で上書きできる)。
+  camera_defaults:
+    fov_deg: 90           # 水平画角
+    width: 320
+    height: 240
+    rate_hz: 2            # レイトレは重いので低め (CPUに応じて上げる)
+    stars: true           # 恒星 (等級ベース。日向に合わせた露出では写らない)
+    exposure: auto        # auto = 自動露出 / 数値 = 固定の露出倍率
+    ev_bias: 0.0          # 露出補正 [EV]
+    auto_exposure_max: 40.0
+    read_noise: 0.006     # 読み出しノイズ
+    shot_noise: 0.012     # ショットノイズ (暗部ほど目立つ)
+    vignette: 0.35        # 周辺減光
+    glare: 0.8            # 太陽が写った時のグレア
+    blur_px: 0.6          # 光学ボケ [px]
+    distance_overlay: true                          # 地面距離の目盛 (カメラ位置から平坦な地面を仮定した推定)
+    overlay_distances: [2, 4, 6, 8, 10, 15, 20, 30, 50]
+
+  # カメラ: 増減・名称変更は自由 (画面に自動で反映)。
+  # grid は画面の配置 (ui.camera_grid_columns 列のグリッド: 前=中央 / 左右=2段目 / 後ろ=3段目)。
   cameras:
-    - name: front
-      label: 前 (Front)
-      grid: {row: 1, col: 2, span: 2}   # 画面の配置 (4列グリッド: 前=中央 / 左右=2段目 / 後ろ=3段目)
-      mount: {x: 3.0, y: 0.0, z: 1.3, yaw_deg: 0, pitch_deg: -3}
-      fov_deg: 90          # 水平画角
-      width: 320
-      height: 240
-      rate_hz: 2           # レイトレーシングは計算が重いので低め (CPUに応じて上げる)
-      render: raytrace     # raytrace=サーバでレイトレーシング / raster=ブラウザCG描画(高速・近似)
-      supersample: 1       # 1画素あたり n x n サンプル (2で滑らか・4倍遅い)
-      stars: true          # 恒星 (等級ベース。日向に合わせた露出では写らない)
-      star_limit_mag: 7.0
-      # --- 実機カメラ風の画像特性 (全カメラで省略可。下は既定値) ---
-      exposure: auto       # auto = 自動露出 / 数値 = 固定の露出倍率
-      ev_bias: 0.0         # 露出補正 [EV]
-      auto_exposure_max: 40.0
-      read_noise: 0.006    # 読み出しノイズ
-      shot_noise: 0.012    # ショットノイズ (暗部ほど目立つ)
-      vignette: 0.35       # 周辺減光
-      glare: 0.8           # 太陽が写った時のグレア
-      blur_px: 0.6         # 光学ボケ [px]
-    - name: left
-      label: 左 (Left)
-      grid: {row: 2, col: 1, span: 2}
-      mount: {x: 0.0, y: 2.0, z: 2.0, yaw_deg: 90, pitch_deg: -3}   # 箱の側面 (y=width/2)
-      fov_deg: 90
-      width: 320
-      height: 240
-      rate_hz: 2
-    - name: right
-      label: 右 (Right)
-      grid: {row: 2, col: 3, span: 2}
-      mount: {x: 0.0, y: -2.0, z: 2.0, yaw_deg: -90, pitch_deg: -3}
-      fov_deg: 90
-      width: 320
-      height: 240
-      rate_hz: 2
-    # 後ろカメラは2台 (左後ろ・右後ろ。少し外向きに振って死角を減らす)
-    - name: rear_left
-      label: 後ろ左 (Rear L)
-      grid: {row: 3, col: 1, span: 2}
-      mount: {x: -3.0, y: 1.0, z: 1.3, yaw_deg: 170, pitch_deg: -3}
-      fov_deg: 90
-      width: 320
-      height: 240
-      rate_hz: 2
-    - name: rear_right
-      label: 後ろ右 (Rear R)
-      grid: {row: 3, col: 3, span: 2}
-      mount: {x: -3.0, y: -1.0, z: 1.3, yaw_deg: 190, pitch_deg: -3}
-      fov_deg: 90
-      width: 320
-      height: 240
-      rate_hz: 2
+    - {name: front,      label: "前 (Front)",       grid: {row: 1, col: 2, span: 2}, mount: {x:  3.0, y:  0.0, z: 1.3, yaw_deg:   0, pitch_deg: -3}}
+    - {name: left,       label: "左 (Left)",        grid: {row: 2, col: 1, span: 2}, mount: {x:  0.0, y:  2.0, z: 2.0, yaw_deg:  90, pitch_deg: -3}}
+    - {name: right,      label: "右 (Right)",       grid: {row: 2, col: 3, span: 2}, mount: {x:  0.0, y: -2.0, z: 2.0, yaw_deg: -90, pitch_deg: -3}}
+    # 後ろカメラは2台 (少し外向きに振って死角を減らす)
+    - {name: rear_left,  label: "後ろ左 (Rear L)",  grid: {row: 3, col: 1, span: 2}, mount: {x: -3.0, y:  1.0, z: 1.3, yaw_deg: 170, pitch_deg: -3}}
+    - {name: rear_right, label: "後ろ右 (Rear R)",  grid: {row: 3, col: 3, span: 2}, mount: {x: -3.0, y: -1.0, z: 1.3, yaw_deg: 190, pitch_deg: -3}}
 
   # 前面フラッシュライダー (視野内を一括照射 → 距離画像 → 点群)
+  lidar_defaults:
+    min_range: 0.5        # [m]
+    rate_hz: 5
+    range_noise_std: 0.02 # 距離ノイズ σ [m]
+    dropout: 0.01         # 欠測率 0-1
+    # max_range は「reference_reflectivity の面に垂直入射」での到達距離。
+    # 地面すれすれ・暗い面ほど短くなる (受信強度 ∝ 反射率 x cos(入射角) / 距離^2)。
+    reference_reflectivity: 0.10
+    ground_reflectivity: 0.12   # 月面
+    rock_reflectivity: 0.12
+    hls_reflectivity: 0.70      # HLS (白色塗装)
+
   lidars:
     - name: front_flash
       label: 前面フラッシュライダー
@@ -135,19 +120,10 @@ sensors:
       v_fov_deg: 30
       h_pixels: 128         # 水平画素数
       v_pixels: 96          # 垂直画素数
-      min_range: 0.5        # [m]
       max_range: 60.0       # [m]
-      rate_hz: 5
-      range_noise_std: 0.02 # 距離ノイズ σ [m]
-      dropout: 0.01         # 欠測率 0-1
-      # 検出限界: max_range は「基準反射率の面に垂直入射」での到達距離。地面すれすれ・暗い面ほど短くなる (0 で無効)
-      reference_reflectivity: 0.10
-      ground_reflectivity: 0.12   # 月面
-      rock_reflectivity: 0.12
-      hls_reflectivity: 0.70      # HLS (白色塗装)
 
 ui:
-  lidar_view_range: 40.0    # 俯瞰図の初期表示半径 [m] (ホイールで変更可)
+  lidar_view_range: 40.0    # 点群ビューの初期表示半径 [m] (ホイールで変更可)
   exposure: 2.5             # 右側3Dビューの明るさ (画面のスライダでも変更可)
   view_fill: 0.25           # 3Dビューだけに足す、影の中の地形の補助光 (カメラ画像には影響しない)
-  camera_grid_columns: 4    # カメラ画像の配置グリッドの列数 (各カメラの grid: {row, col, span})
+  camera_grid_columns: 4    # カメラ画像の配置グリッドの列数

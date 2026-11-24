@@ -1,8 +1,6 @@
 """前面フラッシュライダー: 設定した視野/画素数の格子状に一括照射し、距離画像→点群を生成."""
 from __future__ import annotations
 
-import math
-
 import numpy as np
 
 from .geometry import mount_position, mount_rotation, rot_zyx
@@ -11,7 +9,6 @@ from .world import World
 
 class FlashLidar:
     def __init__(self, cfg: dict, world: World, seed: int = 0):
-        self.cfg = cfg
         self.world = world
         self.name = cfg["name"]
         self.rate = float(cfg["rate_hz"])
@@ -19,44 +16,34 @@ class FlashLidar:
         self.tmax = float(cfg["max_range"])
         self.noise = float(cfg["range_noise_std"])
         self.dropout = float(cfg["dropout"])
-        # 検出限界: max_range は「基準反射率 reference_reflectivity の面に垂直入射したとき」の到達距離。
-        # 受信強度 ∝ 反射率 x cos(入射角) / R^2 なので、地面すれすれ(cosが小さい)や暗い面ほど短くなる。0 で無効。
-        self.rho_ref = float(cfg.get("reference_reflectivity", 0.10))
-        self.rho = {1: float(cfg.get("ground_reflectivity", 0.12)), 2: float(cfg.get("rock_reflectivity", 0.12)),
-                    3: float(cfg.get("hls_reflectivity", 0.70))}
+        # 検出限界 (max_range の基準反射率と、面の種別 [なし, 地形, 岩, HLS] ごとの反射率)
+        self.rho_ref = float(cfg["reference_reflectivity"])
+        self.rho = np.array([0.0, cfg["ground_reflectivity"], cfg["rock_reflectivity"], cfg["hls_reflectivity"]])
         self.rng = np.random.default_rng(seed)
 
-        hp, vp = int(cfg["h_pixels"]), int(cfg["v_pixels"])
-        az = np.radians(np.linspace(cfg["h_fov_deg"] / 2, -cfg["h_fov_deg"] / 2, hp))
-        el = np.radians(np.linspace(cfg["v_fov_deg"] / 2, -cfg["v_fov_deg"] / 2, vp))
+        # 画素ごとの方向 (センサ座標: x=前, y=左, z=上) を車体座標へ
+        az = np.radians(np.linspace(cfg["h_fov_deg"] / 2, -cfg["h_fov_deg"] / 2, int(cfg["h_pixels"])))
+        el = np.radians(np.linspace(cfg["v_fov_deg"] / 2, -cfg["v_fov_deg"] / 2, int(cfg["v_pixels"])))
         AZ, EL = np.meshgrid(az, el)
         d = np.stack([np.cos(EL) * np.cos(AZ), np.cos(EL) * np.sin(AZ), np.sin(EL)], -1).reshape(-1, 3)
         self.m_pos = mount_position(cfg["mount"])
-        self.m_rot = mount_rotation(cfg["mount"])
-        self.dirs_body = d @ self.m_rot.T  # 車体座標系での各画素の方向
+        self.dirs_body = d @ mount_rotation(cfg["mount"]).T
 
     def scan(self, pose) -> np.ndarray:
         """pose=(x,y,z,yaw,pitch,roll). 戻り値: (n,4) float32 [x,y,z,range] (車体座標系)."""
-        x, y, z, yaw, pitch, roll = pose
-        R = rot_zyx(yaw, pitch, roll)
-        origin = np.array([x, y, z]) + R @ self.m_pos
+        R = rot_zyx(*pose[3:])
+        origin = np.array(pose[:3]) + R @ self.m_pos
         d_world = self.dirs_body @ R.T
-        if self.rho_ref > 0:
-            t, kind, rid = self.world.raycast(origin, d_world, self.tmin, self.tmax, detail=True)
-            hit = np.isfinite(t)
-            tt = np.where(hit, t, 0.0)
-            n = self.world.surface_normals(origin + d_world * tt[:, None], kind, rid)
-            cos_inc = np.abs((n * d_world).sum(1))
-            rho = np.choose(np.clip(kind, 0, 3), [0.0, self.rho[1], self.rho[2], self.rho[3]])
-            r_eff = np.minimum(self.tmax, self.tmax * np.sqrt(rho * cos_inc / self.rho_ref))
-            t = np.where(hit & (t <= r_eff), t, np.inf)
-        else:
-            t = self.world.raycast(origin, d_world, self.tmin, self.tmax)
-        valid = np.isfinite(t)
-        if self.dropout > 0:
-            valid &= self.rng.random(len(t)) >= self.dropout
-        t = t[valid]
-        if self.noise > 0:
-            t = t + self.rng.normal(0.0, self.noise, len(t))
+        t, kind, rid = self.world.raycast(origin, d_world, self.tmin, self.tmax)
+
+        # 検出限界: 受信強度 ∝ 反射率 x cos(入射角) / 距離^2。地面すれすれや暗い面ほど短い距離で検出できなくなる
+        hit = np.isfinite(t)
+        normals = self.world.surface_normals(origin + d_world * np.where(hit, t, 0.0)[:, None], kind, rid)
+        cos_inc = np.abs((normals * d_world).sum(1))
+        r_eff = self.tmax * np.sqrt(self.rho[kind] * cos_inc / self.rho_ref)
+        valid = hit & (t <= np.minimum(r_eff, self.tmax))
+        valid &= self.rng.random(len(t)) >= self.dropout
+
+        t = t[valid] + self.rng.normal(0.0, self.noise, valid.sum())
         pts = self.m_pos + self.dirs_body[valid] * t[:, None]
         return np.column_stack([pts, t]).astype(np.float32)

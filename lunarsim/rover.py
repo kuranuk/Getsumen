@@ -47,15 +47,7 @@ class Rover:
         z = (hf + hr + hl + hrt) / 4.0 + self.wheel_r
         return float(z), float(-math.atan(slope_f)), float(math.atan(slope_l))
 
-    # ---- 操作 ----
-    def hls_gap(self) -> float:
-        h = self.world.hls
-        return math.hypot(self.x - h["x"], self.y - h["y"]) - h["radius"]
-
-    def hls_bearing(self) -> float:
-        h = self.world.hls
-        return wrap_pi(math.atan2(h["y"] - self.y, h["x"] - self.x) - self.yaw)
-
+    # ---- 運動 ----
     def step(self, dt: float, cmd_v: float, cmd_w: float):
         with self._lock:
             tv = max(-1.0, min(1.0, cmd_v)) * self.vmax
@@ -92,13 +84,9 @@ class Rover:
 
     def state(self, sim_t: float) -> dict:
         with self._lock:
-            h = self.world.hls
-            gap = math.hypot(self.x - h["x"], self.y - h["y"]) - h["radius"]
             return {
                 "t": "state", "sim_t": round(sim_t, 3),
                 "x": self.x, "y": self.y, "z": self.z,
                 "yaw": self.yaw, "pitch": self.pitch, "roll": self.roll,
                 "v": self.v, "w": self.w, "odo": self.odo,
-                "hls_gap": gap - self.L / 2.0,  # 車体前端(中心線上)からHLS表面まで
-                "hls_bearing": wrap_pi(math.atan2(h["y"] - self.y, h["x"] - self.x) - self.yaw),
             }

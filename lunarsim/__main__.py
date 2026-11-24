@@ -1,4 +1,4 @@
-"""起動: python -m lunarsim [--config config/default.yaml]"""
+"""起動: python -m lunarsim [-c 設定.yaml]"""
 from __future__ import annotations
 
 import argparse
@@ -12,7 +12,7 @@ from .server import create_app
 
 def main():
     ap = argparse.ArgumentParser(description="月面ロボットシミュレータ (Web UI)")
-    ap.add_argument("--config", "-c", default="config/default.yaml", help="設定YAML")
+    ap.add_argument("--config", "-c", help="設定YAML (config/default.yaml への差分を書く)")
     ap.add_argument("--host", help="待受ホスト (設定を上書き)")
     ap.add_argument("--port", type=int, help="待受ポート (設定を上書き)")
     ap.add_argument("--seed", type=int, help="地形の乱数シード (設定を上書き)")

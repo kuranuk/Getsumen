@@ -250,6 +250,7 @@ class World:
     # ---------------- レイキャスト ----------------
     @staticmethod
     def _steps(tmin: float, tmax: float) -> list[float]:
+        """レイマーチングの刻み (遠いほど粗く)."""
         ts, t = [], tmin
         while t < tmax:
             ts.append(t)
@@ -257,18 +258,100 @@ class World:
         ts.append(tmax)
         return ts
 
-    def raycast(self, o: np.ndarray, d: np.ndarray, tmin: float, tmax: float, detail: bool = False):
-        """原点 o (3,), 方向 d (N,3, 単位ベクトル) の最初の交点までの距離 (なければ inf).
-        detail=True なら (t, kind, rock_index) を返す。kind: 0=なし 1=地形 2=岩 3=HLS."""
-        n = len(d)
-        t_best = np.full(n, np.inf)
-        kind = np.zeros(n, np.int8)
-        rid = np.full(n, -1, np.int32)
-        self._ray_terrain(o, d, tmin, tmax, t_best)
-        kind[np.isfinite(t_best)] = 1
-        self._ray_rocks(o, d, tmin, tmax, t_best, kind, rid)
-        self._ray_hls(o, d, tmin, tmax, t_best, kind)
-        return (t_best, kind, rid) if detail else t_best
+    def raycast(self, o: np.ndarray, d: np.ndarray, tmin: float, tmax: float, rocks: bool = True):
+        """原点 o (3,) から方向 d (N,3 単位ベクトル) の各光線の最初の交点.
+        戻り値 (t, kind, rid): 距離 (当たらなければ inf) / 種別 (0=なし 1=地形 2=岩 3=HLS) / 岩の番号.
+        地形は tmax までマーチングし、地形の外側は z=0 の平面 (距離無制限) として扱う。
+        rocks=False なら岩は含めない (カメラ用には画素窓を使う高速版 RayTracer._rocks がある)."""
+        t = self._ray_terrain(o, d, tmin, tmax)
+        kind = np.where(np.isfinite(t), 1, 0).astype(np.int8)
+        rid = np.full(len(d), -1, np.int32)
+
+        far = (kind == 0) & (d[:, 2] < -1e-5)  # 地形の外側の平面
+        t[far] = -o[2] / d[far, 2]
+        kind[far] = 1
+
+        if rocks:
+            self._ray_rocks(o, d, tmin, tmax, t, kind, rid)
+        self._ray_hls(o, d, tmin, tmax, t, kind)
+        return t, kind, rid
+
+    def _ray_terrain(self, o, d, tmin, tmax) -> np.ndarray:
+        """高さマップのレイマーチング (交差を挟んだ区間を二分法で詰める). 当たらなければ inf."""
+        t_hit = np.full(len(d), np.inf)
+        idx = np.nonzero(d[:, 2] < 0.5)[0]  # 大きく上向きの光線は地面に当たらない
+        dx, dy, dz = d[idx, 0].copy(), d[idx, 1].copy(), d[idx, 2].copy()
+        half = self.size / 2.0
+        prev = tmin
+        for t in self._steps(tmin, tmax):
+            if idx.size == 0:
+                break
+            px, py, pz = o[0] + dx * t, o[1] + dy * t, o[2] + dz * t
+            hit = pz - self.height(px, py) <= 0.0
+            if hit.any():
+                lo = np.full(hit.sum(), prev)
+                up = np.full(hit.sum(), t)
+                hx, hy, hz = dx[hit], dy[hit], dz[hit]
+                for _ in range(8):
+                    mid = 0.5 * (lo + up)
+                    above = o[2] + hz * mid - self.height(o[0] + hx * mid, o[1] + hy * mid) > 0
+                    lo = np.where(above, mid, lo)
+                    up = np.where(above, up, mid)
+                t_hit[idx[hit]] = 0.5 * (lo + up)
+            keep = ~hit & (np.abs(px) < half) & (np.abs(py) < half)  # 当たった光線と地形外へ出た光線は打ち切る
+            idx, dx, dy, dz = idx[keep], dx[keep], dy[keep], dz[keep]
+            prev = t
+        return t_hit
+
+    def _ray_rocks(self, o, d, tmin, tmax, t, kind, rid):
+        """岩 (球) との交差. 光線束の円錐に入らない岩は先に除外する."""
+        if len(self.rocks) == 0:
+            return
+        rel = self.rocks[:, :3] - o
+        dist = np.linalg.norm(rel, axis=1)
+        axis = d.mean(axis=0)
+        axis /= np.linalg.norm(axis) + 1e-12
+        spread = float(np.arccos(np.clip((d @ axis).min(), -1, 1)))
+        for k in np.nonzero(dist < tmax + self.rocks[:, 3])[0]:
+            r = self.rocks[k, 3]
+            dk = max(dist[k], 1e-6)
+            ang = math.acos(np.clip(rel[k] @ axis / dk, -1, 1))
+            if ang > spread + math.asin(min(1.0, r / dk)) + 0.02:
+                continue
+            oc = o - self.rocks[k, :3]
+            b = d @ oc
+            disc = b * b - (oc @ oc - r * r)
+            tk = np.where(disc > 0, -b - np.sqrt(np.maximum(disc, 0.0)), np.inf)
+            tk[(tk < tmin) | (tk > tmax)] = np.inf
+            closer = tk < t
+            t[closer], kind[closer], rid[closer] = tk[closer], 2, k
+
+    def _ray_hls(self, o, d, tmin, tmax, t, kind):
+        """HLS (鉛直な円柱: 側面 + 上面) との交差."""
+        h = self.hls
+        c = np.array([h["x"], h["y"]])
+        R = float(h["radius"])
+        z0, z1 = self.hls_z0, self.hls_z0 + float(h["height"])
+        a = d[:, 0] ** 2 + d[:, 1] ** 2
+        oc = o[:2] - c
+        b = d[:, 0] * oc[0] + d[:, 1] * oc[1]
+        disc = b * b - a * (oc @ oc - R * R)
+        ok = (a > 1e-12) & (disc > 0)
+        with np.errstate(invalid="ignore"):
+            side = np.full(len(d), np.inf)
+            side[ok] = (-b[ok] - np.sqrt(disc[ok])) / a[ok]
+            z = o[2] + d[:, 2] * side
+            side[(side < tmin) | (side > tmax) | (z < z0) | (z > z1)] = np.inf
+
+            top = np.full(len(d), np.inf)
+            down = d[:, 2] < -1e-9
+            top[down] = (z1 - o[2]) / d[down, 2]
+            inside = (o[0] + d[:, 0] * top - c[0]) ** 2 + (o[1] + d[:, 1] * top - c[1]) ** 2 <= R * R
+            top[(top < tmin) | (top > tmax) | ~inside] = np.inf
+
+        th = np.minimum(side, top)
+        closer = th < t
+        t[closer], kind[closer] = th[closer], 3
 
     def surface_normals(self, P, kind, rid):
         """交点 P (N,3) での面の法線 (地形=勾配, 岩=球, HLS=円柱側面/上面)."""
@@ -282,102 +365,16 @@ class World:
             n[m] = np.stack([-hx, -hy, np.ones_like(hx)], 1)
         m = kind == 2
         if m.any():
-            k = rid[m]
-            n[m] = (P[m] - self.rocks[k, :3]) / self.rocks[k, 3][:, None]
+            n[m] = (P[m] - self.rocks[rid[m], :3]) / self.rocks[rid[m], 3][:, None]
         m = kind == 3
         if m.any():
             h = self.hls
-            top = self.hls_z0 + float(h["height"])
-            side = P[m, 2] < top - 1e-3
-            v = np.zeros((m.sum(), 3))
-            v[side, 0] = P[m][side, 0] - h["x"]
-            v[side, 1] = P[m][side, 1] - h["y"]
-            v[~side, 2] = 1.0
+            v = P[m] - [h["x"], h["y"], 0.0]
+            v[:, 2] = 0.0
+            on_top = P[m, 2] >= self.hls_z0 + float(h["height"]) - 1e-3
+            v[on_top] = [0.0, 0.0, 1.0]
             n[m] = v
         return n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-9)
-
-    def _ray_terrain(self, o, d, tmin, tmax, t_best):
-        idx = np.nonzero(d[:, 2] < 0.5)[0]  # 大きく上向きの光線は地面に当たらない
-        prev = tmin
-        first = True
-        for t in self._steps(tmin, tmax):
-            if idx.size == 0:
-                break
-            dd = d[idx]
-            px = o[0] + dd[:, 0] * t
-            py = o[1] + dd[:, 1] * t
-            pz = o[2] + dd[:, 2] * t
-            hit = pz - self.height(px, py) <= 0.0
-            if hit.any():
-                hi = idx[hit]
-                dh = d[hi]
-                lo = np.full(len(hi), prev)
-                up = np.full(len(hi), t)
-                for _ in range(8):
-                    mid = 0.5 * (lo + up)
-                    ab = o[2] + dh[:, 2] * mid - self.height(o[0] + dh[:, 0] * mid, o[1] + dh[:, 1] * mid)
-                    pos = ab > 0
-                    lo = np.where(pos, mid, lo)
-                    up = np.where(pos, up, mid)
-                t_best[hi] = np.minimum(t_best[hi], 0.5 * (lo + up))
-                idx = idx[~hit]
-            prev = t
-            first = False
-
-    def _ray_rocks(self, o, d, tmin, tmax, t_best, kind=None, rid=None):
-        if len(self.rocks) == 0:
-            return
-        rel = self.rocks[:, :3] - o
-        dist = np.linalg.norm(rel, axis=1)
-        near = dist < tmax + self.rocks[:, 3]
-        if not near.any():
-            return
-        # 光線束の代表方向と広がりで粗く棄却
-        axis = d.mean(axis=0)
-        axis /= np.linalg.norm(axis) + 1e-12
-        spread = float(np.arccos(np.clip((d @ axis).min(), -1, 1)))
-        for k in np.nonzero(near)[0]:
-            r = self.rocks[k, 3]
-            dk = max(dist[k], 1e-6)
-            ang = math.acos(np.clip(rel[k] @ axis / dk, -1, 1))
-            if ang > spread + math.asin(min(1.0, r / dk)) + 0.02:
-                continue
-            oc = o - self.rocks[k, :3]
-            b = d @ oc
-            disc = b * b - (oc @ oc - r * r)
-            m = disc > 0
-            if not m.any():
-                continue
-            t = np.full(len(d), np.inf)
-            t[m] = -b[m] - np.sqrt(disc[m])
-            t[(t < tmin) | (t > tmax)] = np.inf
-            closer = t < t_best
-            if kind is not None and closer.any():
-                kind[closer] = 2
-                rid[closer] = k
-            np.minimum(t_best, t, out=t_best)
-
-    def _ray_hls(self, o, d, tmin, tmax, t_best, kind=None):
-        h = self.hls
-        c = np.array([h["x"], h["y"]])
-        R = float(h["radius"])
-        z0, z1 = self.hls_z0, self.hls_z0 + float(h["height"])
-        a = d[:, 0] ** 2 + d[:, 1] ** 2
-        oc = o[:2] - c
-        b = d[:, 0] * oc[0] + d[:, 1] * oc[1]
-        cc = oc @ oc - R * R
-        disc = b * b - a * cc
-        m = (a > 1e-9) & (disc > 0)
-        if not m.any():
-            return
-        t = np.full(len(d), np.inf)
-        t[m] = (-b[m] - np.sqrt(disc[m])) / a[m]
-        z = o[2] + d[:, 2] * t
-        bad = (t < tmin) | (t > tmax) | (z < z0) | (z > z1) | ~np.isfinite(t)
-        t[bad] = np.inf
-        if kind is not None:
-            kind[t < t_best] = 3
-        np.minimum(t_best, t, out=t_best)
 
     # ---------------- 配信用 ----------------
     def describe(self) -> dict:
