@@ -78,11 +78,8 @@ lunarsim/
   workers.py             重い計算を別プロセスで実行 (レイトレ / ライダー / 影の再計算)
   server.py              aiohttp + WebSocket (状態 JSON, 点群・カメラ画像バイナリ)
   web/
-    app.js               画面全体の組み立て, サーバとの通信, 視点, メインループ
-    scene.js             右の3Dビュー (月面, 岩, HLS, ローバー, 太陽)
-    cameras.js           カメラ画像のセンサ処理 (露出, ノイズ, グレア, 距離目盛)
-    lidar.js             点群の俯瞰図と3Dビュー上の点群
-    input.js             キーボード操作
+    app.js               ブラウザ側のすべて (3Dビュー, カメラ画像のセンサ処理, 点群, キー操作, 通信)
+    index.html, style.css
 tests/test_world.py
 ```
 
