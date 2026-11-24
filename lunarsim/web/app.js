@@ -434,8 +434,6 @@ async function main() {
   function updateHud(m) {
     $('#h-v').textContent = m.v.toFixed(2);
     $('#h-w').textContent = deg(m.w).toFixed(1);
-    $('#h-gap').textContent = Math.max(0, m.hls_gap).toFixed(1);
-    $('#h-brg').textContent = deg(m.hls_bearing).toFixed(0);
     $('#h-pitch').textContent = deg(m.pitch).toFixed(1);
     $('#h-roll').textContent = deg(m.roll).toFixed(1);
     $('#h-odo').textContent = m.odo.toFixed(0);
