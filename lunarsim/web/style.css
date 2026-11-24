@@ -3,11 +3,13 @@
 html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
   font: 13px/1.4 system-ui, "Hiragino Sans", "Noto Sans JP", sans-serif; overflow:hidden; }
 #app { display:grid; grid-template-columns: minmax(340px, 38%) 1fr; height:100vh; }
-#left { display:flex; flex-direction:column; min-width:0; background:var(--panel); border-right:1px solid var(--line); }
-#lidar-panel { flex:1 1 auto; min-height:200px; display:flex; flex-direction:column; border-bottom:1px solid var(--line); }
+#left { display:flex; flex-direction:column; min-width:0; overflow-y:auto; background:var(--panel); border-right:1px solid var(--line); }
+#lidar-panel { flex:1 0 auto; min-height:240px; display:flex; flex-direction:column; border-bottom:1px solid var(--line); }
 #lidar-panel header, .cam header { display:flex; justify-content:space-between; padding:4px 8px; color:var(--dim); font-size:12px; }
 #lidar-canvas { flex:1 1 auto; width:100%; min-height:0; display:block; background:#05070a; }
-.cams { display:grid; grid-template-columns: 1fr 1fr; gap:4px; padding:4px; }
+.cams { display:grid; grid-template-columns: repeat(var(--cols, 4), 1fr); gap:4px; padding:4px; flex:0 0 auto;
+  /* 3段(前/左右/後ろ)が画面に収まり、点群ビューに高さが残るよう、幅を画面の高さに合わせて絞る (4:3想定) */
+  width:min(100%, calc((100vh - 360px) * 0.89)); min-width:300px; margin:0 auto; }
 .cam { background:#000; border:1px solid var(--line); position:relative; }
 .cam header { position:absolute; left:0; right:0; top:0; z-index:1; padding:2px 6px; color:#fff; text-shadow:0 0 3px #000;
   background:linear-gradient(#000a, #0000); pointer-events:none; }

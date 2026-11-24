@@ -53,7 +53,7 @@ DEFAULTS: dict = {
         "auto_standoff": 3.0,      # 自動アプローチの停止距離 (車体前端-HLS表面) [m]
     },
     "sensors": {"cameras": [], "lidars": []},
-    "ui": {"lidar_view_range": 40.0, "exposure": 1.0},
+    "ui": {"lidar_view_range": 40.0, "exposure": 2.5, "view_fill": 0.25, "camera_grid_columns": 4},
 }
 
 

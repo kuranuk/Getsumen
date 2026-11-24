@@ -31,7 +31,9 @@ async function main() {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.shadowMap.autoUpdate = false; // 1フレームに1回だけ影を更新 (カメラ画像でも共用)
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = world.ui.exposure ?? 1.0;
+  let viewExp = world.ui.exposure ?? 2.5;
+  try { const v = parseFloat(localStorage.getItem('viewExposure')); if (v > 0) viewExp = v; } catch (e) { /* 保存は任意 */ }
+  renderer.toneMappingExposure = viewExp;
   $('#view3d').appendChild(renderer.domElement);
 
   // ---- 太陽 (南極: 仰角 0〜数度の低い太陽。方位/仰角は UI から変更可) ----
@@ -55,6 +57,11 @@ async function main() {
   // 右の3Dビューだけに足す補助光。地形/岩の自己発光として足すので、HLSやローバーの影側は真っ黒のまま (カメラ画像にも影響しない)
   const FILL_RAD = 0.14 * (world.ui.view_fill ?? 0.12);
   const fillMats = [];
+  const outlines = []; // 3Dビューだけに表示する輪郭線 (影の中でも形が分かるように。カメラ画像には写さない)
+  const addOutline = (mesh, geo, angle = 30) => {
+    const ol = new THREE.LineSegments(new THREE.EdgesGeometry(geo, angle), new THREE.LineBasicMaterial({ color: 0x8fd0ff, toneMapped: false }));
+    mesh.add(ol); outlines.push(ol);
+  };
   hemi.intensity = AMBIENT;
   scene.add(hemi);
   function setSun(azRad, elRad) {
@@ -184,6 +191,7 @@ async function main() {
       new THREE.MeshLambertMaterial({ color: hls.color || '#d8dade' }));
     g.rotation.x = Math.PI / 2; g.position.set(hls.x, hls.y, T.hls_z0 + hls.height / 2);
     g.castShadow = g.receiveShadow = true;
+    addOutline(g, g.geometry);
     scene.add(g);
   } else {
     const g = new THREE.Group();
@@ -232,6 +240,7 @@ async function main() {
       new THREE.MeshLambertMaterial({ color: rcfg.color || '#e9eaec' }));
     box.position.set(0, 0, rcfg.clearance - rcfg.wheel_radius + rcfg.height / 2);
     box.castShadow = box.receiveShadow = true;
+    addOutline(box, box.geometry);
     rover.add(box);
   } else {
     const L = rcfg.length, W = rcfg.width, wr = rcfg.wheel_radius;
@@ -286,7 +295,11 @@ async function main() {
     const el = document.createElement('div'); el.className = 'cam';
     el.innerHTML = `<header><span>${c.label}</span><span class="fps"></span></header>`;
     const canvas = document.createElement('canvas'); canvas.width = c.width; canvas.height = c.height;
-    el.appendChild(canvas); $('#cams').appendChild(el);
+    el.appendChild(canvas);
+    // 配置: cfg.grid = {row, col, span} (列数は ui.camera_grid_columns)。未指定なら自動配置
+    if (c.grid) { el.style.gridRow = String(c.grid.row); el.style.gridColumn = `${c.grid.col} / span ${c.grid.span || 1}`; }
+    $('#cams').style.setProperty('--cols', world.ui.camera_grid_columns || 4);
+    $('#cams').appendChild(el);
     // HDR(線形・浮動小数点)で描画し、露出→ノイズ→トーンマップ→sRGB をセンサモデルとして自前で適用する
     const raytraced = (c.render || 'raytrace') !== 'raster'; // true: サーバのレイトレーシング画像を受信 / false: ブラウザで描画
     el.querySelector('header span').insertAdjacentHTML('beforeend', ` <small style="opacity:.7">${raytraced ? 'RT' : 'raster'}</small>`);
@@ -315,6 +328,17 @@ async function main() {
     return { cfg: c, idx, pts, posA, colA, frame: null };
   });
   $('#lidar-title').textContent = world.lidars.length ? `LiDAR 点群 (車両上方から) — ${world.lidars.map((l) => l.label).join(' / ')}` : 'LiDAR なし';
+  // ---- 3Dビューの明るさ ----
+  {
+    const sl = $('#view-exp'), val = $('#view-exp-v');
+    sl.value = Math.log2(viewExp); val.textContent = `${viewExp.toFixed(1)}×`;
+    sl.oninput = () => {
+      viewExp = 2 ** (+sl.value); renderer.toneMappingExposure = viewExp; val.textContent = `${viewExp.toFixed(1)}×`;
+      try { localStorage.setItem('viewExposure', String(viewExp)); } catch (e) { /* 保存は任意 */ }
+    };
+    sl.onchange = () => sl.blur();
+  }
+
   // ---- 太陽の方位/仰角 UI ----
   {
     const az = $('#sun-az'), el = $('#sun-el');
@@ -563,22 +587,6 @@ async function main() {
       lctx.closePath(); lctx.fill(); lctx.stroke();
     }
 
-    // HLS 位置マーカ (範囲外なら表示端に方位だけ示す)
-    const b = st.hls_bearing || 0;
-    const dist = (st.hls_gap ?? 0) + hls.radius + rcfg.length / 2;
-    const rMax = Math.min(cx, W - cx, cy, Hh - cy) * 0.92;
-    const rr = Math.min(dist * scale, rMax), inside = dist * scale <= rMax;
-    const hx = cx + (-Math.sin(b)) * rr, hy = cy - Math.cos(b) * rr;
-    lctx.strokeStyle = '#ff8c1a'; lctx.fillStyle = '#ff8c1a'; lctx.lineWidth = 2 * dpr;
-    if (inside) { // 円筒の断面を円で表示
-      lctx.beginPath(); lctx.arc(hx, hy, Math.max(3 * dpr, hls.radius * scale), 0, 7); lctx.globalAlpha = 0.25; lctx.fill(); lctx.globalAlpha = 1; lctx.stroke();
-    } else {
-      lctx.beginPath(); lctx.moveTo(cx + (-Math.sin(b)) * (rr - 24 * dpr), cy - Math.cos(b) * (rr - 24 * dpr)); lctx.lineTo(hx, hy); lctx.stroke();
-      lctx.beginPath(); lctx.arc(hx, hy, 4 * dpr, 0, 7); lctx.fill();
-    }
-    lctx.fillStyle = '#ff8c1a'; lctx.font = `${11 * dpr}px system-ui`;
-    lctx.fillText(`HLS ${dist.toFixed(0)}m`, hx + 8 * dpr, hy + 4 * dpr);
-
     // 点群
     let info = [];
     for (const l of lidars) {
@@ -743,8 +751,10 @@ async function main() {
     updateMainCamera();
     renderer.shadowMap.needsUpdate = true;
     for (const m of fillMats) m.emissiveIntensity = FILL_RAD;
+    for (const o of outlines) o.visible = true;
     renderer.render(scene, mainCam);
     for (const m of fillMats) m.emissiveIntensity = 0;
+    for (const o of outlines) o.visible = false;
     renderCameras(now);
     drawLidar();
     requestAnimationFrame(frame);
