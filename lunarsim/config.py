@@ -115,6 +115,10 @@ def _validate(cfg: dict) -> None:
         c.setdefault("rate_hz", 5.0)
         c.setdefault("range_noise_std", 0.0)
         c.setdefault("dropout", 0.0)
+        c.setdefault("reference_reflectivity", 0.10)  # max_range の基準反射率 (0 で入射角/反射率による検出限界を無効化)
+        c.setdefault("ground_reflectivity", 0.12)     # 月面の反射率 (レゴリス ~0.12)
+        c.setdefault("rock_reflectivity", 0.12)
+        c.setdefault("hls_reflectivity", 0.70)        # HLS (白色塗装)
         c.setdefault("mount", {})
         if c["name"] in names:
             raise ValueError(f"センサ名が重複しています: {c['name']}")

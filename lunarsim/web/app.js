@@ -578,12 +578,22 @@ async function main() {
     }
     lctx.strokeStyle = '#1b232c'; lctx.beginPath(); lctx.moveTo(cx, 0); lctx.lineTo(cx, Hh); lctx.moveTo(0, cy); lctx.lineTo(W, cy); lctx.stroke();
 
-    // 視野 (ライダー FOV)
+    // 視野 (ライダー FOV): 俯角を考慮した「地面に当たる範囲」(平坦な地面を仮定した概算) を描く
+    // 地面到達の水平距離 = センサ高 / tan(俯角)。視野の上端が水平以上なら最大距離まで届く。
+    const footprints = [];
     for (const l of lidars) {
       const c = l.cfg, m = c.mount, y0 = rad(m.yaw_deg || 0), hf = rad(c.h_fov_deg) / 2;
-      const ox = m.x || 0, oy = m.y || 0;
-      lctx.strokeStyle = '#ffd23a55'; lctx.fillStyle = '#ffd23a0d'; lctx.beginPath(); lctx.moveTo(sx(oy), sy(ox));
-      for (const a of [y0 + hf, y0 - hf]) lctx.lineTo(sx(oy + c.max_range * Math.sin(a)), sy(ox + c.max_range * Math.cos(a)));
+      const ox = m.x || 0, oy = m.y || 0, hgt = (m.z || 0) + rcfg.wheel_radius;
+      const elTop = (m.pitch_deg || 0) + c.v_fov_deg / 2, elBot = (m.pitch_deg || 0) - c.v_fov_deg / 2;
+      const far = elTop < -0.01 ? Math.min(c.max_range, hgt / Math.tan(rad(-elTop))) : c.max_range;
+      const near = elBot < -0.01 ? Math.min(far, Math.max(c.min_range, hgt / Math.tan(rad(-elBot)))) : c.min_range;
+      footprints.push({ near, far, name: c.name });
+      const P = (r, a) => [sx(oy + r * Math.sin(a)), sy(ox + r * Math.cos(a))];
+      lctx.strokeStyle = '#ffd23a77'; lctx.fillStyle = '#ffd23a10'; lctx.lineWidth = 1 * dpr;
+      lctx.beginPath();
+      let q = P(far, y0 + hf); lctx.moveTo(q[0], q[1]);
+      for (let k = 1; k <= 24; k++) { q = P(far, y0 + hf - (2 * hf * k) / 24); lctx.lineTo(q[0], q[1]); }
+      for (let k = 24; k >= 0; k--) { q = P(near, y0 + hf - (2 * hf * k) / 24); lctx.lineTo(q[0], q[1]); }
       lctx.closePath(); lctx.fill(); lctx.stroke();
     }
 
@@ -601,7 +611,8 @@ async function main() {
         lctx.fillStyle = `rgb(${tmp[0] * 255 | 0},${tmp[1] * 255 | 0},${tmp[2] * 255 | 0})`;
         lctx.fillRect(px - sz / 2, py - sz / 2, sz, sz);
       }
-      info.push(`${l.cfg.name}: ${f.n} pts`);
+      const fp = footprints.find((x) => x.name === l.cfg.name);
+      info.push(`${l.cfg.name}: ${f.n} pts${fp ? `  地面 ${fp.near.toFixed(1)}〜${fp.far.toFixed(1)} m` : ''}`);
     }
     $('#lidar-info').textContent = `${info.join(' | ')}  表示半径 ${viewRange.toFixed(0)} m`;
 

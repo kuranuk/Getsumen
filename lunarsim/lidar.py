@@ -19,6 +19,11 @@ class FlashLidar:
         self.tmax = float(cfg["max_range"])
         self.noise = float(cfg["range_noise_std"])
         self.dropout = float(cfg["dropout"])
+        # 検出限界: max_range は「基準反射率 reference_reflectivity の面に垂直入射したとき」の到達距離。
+        # 受信強度 ∝ 反射率 x cos(入射角) / R^2 なので、地面すれすれ(cosが小さい)や暗い面ほど短くなる。0 で無効。
+        self.rho_ref = float(cfg.get("reference_reflectivity", 0.10))
+        self.rho = {1: float(cfg.get("ground_reflectivity", 0.12)), 2: float(cfg.get("rock_reflectivity", 0.12)),
+                    3: float(cfg.get("hls_reflectivity", 0.70))}
         self.rng = np.random.default_rng(seed)
 
         hp, vp = int(cfg["h_pixels"]), int(cfg["v_pixels"])
@@ -36,7 +41,17 @@ class FlashLidar:
         R = rot_zyx(yaw, pitch, roll)
         origin = np.array([x, y, z]) + R @ self.m_pos
         d_world = self.dirs_body @ R.T
-        t = self.world.raycast(origin, d_world, self.tmin, self.tmax)
+        if self.rho_ref > 0:
+            t, kind, rid = self.world.raycast(origin, d_world, self.tmin, self.tmax, detail=True)
+            hit = np.isfinite(t)
+            tt = np.where(hit, t, 0.0)
+            n = self.world.surface_normals(origin + d_world * tt[:, None], kind, rid)
+            cos_inc = np.abs((n * d_world).sum(1))
+            rho = np.choose(np.clip(kind, 0, 3), [0.0, self.rho[1], self.rho[2], self.rho[3]])
+            r_eff = np.minimum(self.tmax, self.tmax * np.sqrt(rho * cos_inc / self.rho_ref))
+            t = np.where(hit & (t <= r_eff), t, np.inf)
+        else:
+            t = self.world.raycast(origin, d_world, self.tmin, self.tmax)
         valid = np.isfinite(t)
         if self.dropout > 0:
             valid &= self.rng.random(len(t)) >= self.dropout

@@ -257,14 +257,44 @@ class World:
         ts.append(tmax)
         return ts
 
-    def raycast(self, o: np.ndarray, d: np.ndarray, tmin: float, tmax: float) -> np.ndarray:
-        """原点 o (3,), 方向 d (N,3, 単位ベクトル) の最初の交点までの距離 (なければ inf)."""
+    def raycast(self, o: np.ndarray, d: np.ndarray, tmin: float, tmax: float, detail: bool = False):
+        """原点 o (3,), 方向 d (N,3, 単位ベクトル) の最初の交点までの距離 (なければ inf).
+        detail=True なら (t, kind, rock_index) を返す。kind: 0=なし 1=地形 2=岩 3=HLS."""
         n = len(d)
         t_best = np.full(n, np.inf)
+        kind = np.zeros(n, np.int8)
+        rid = np.full(n, -1, np.int32)
         self._ray_terrain(o, d, tmin, tmax, t_best)
-        self._ray_rocks(o, d, tmin, tmax, t_best)
-        self._ray_hls(o, d, tmin, tmax, t_best)
-        return t_best
+        kind[np.isfinite(t_best)] = 1
+        self._ray_rocks(o, d, tmin, tmax, t_best, kind, rid)
+        self._ray_hls(o, d, tmin, tmax, t_best, kind)
+        return (t_best, kind, rid) if detail else t_best
+
+    def surface_normals(self, P, kind, rid):
+        """交点 P (N,3) での面の法線 (地形=勾配, 岩=球, HLS=円柱側面/上面)."""
+        n = np.zeros((len(P), 3))
+        m = kind == 1
+        if m.any():
+            e = 0.6
+            x, y = P[m, 0], P[m, 1]
+            hx = (self.height(x + e, y) - self.height(x - e, y)) / (2 * e)
+            hy = (self.height(x, y + e) - self.height(x, y - e)) / (2 * e)
+            n[m] = np.stack([-hx, -hy, np.ones_like(hx)], 1)
+        m = kind == 2
+        if m.any():
+            k = rid[m]
+            n[m] = (P[m] - self.rocks[k, :3]) / self.rocks[k, 3][:, None]
+        m = kind == 3
+        if m.any():
+            h = self.hls
+            top = self.hls_z0 + float(h["height"])
+            side = P[m, 2] < top - 1e-3
+            v = np.zeros((m.sum(), 3))
+            v[side, 0] = P[m][side, 0] - h["x"]
+            v[side, 1] = P[m][side, 1] - h["y"]
+            v[~side, 2] = 1.0
+            n[m] = v
+        return n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-9)
 
     def _ray_terrain(self, o, d, tmin, tmax, t_best):
         idx = np.nonzero(d[:, 2] < 0.5)[0]  # 大きく上向きの光線は地面に当たらない
@@ -294,7 +324,7 @@ class World:
             prev = t
             first = False
 
-    def _ray_rocks(self, o, d, tmin, tmax, t_best):
+    def _ray_rocks(self, o, d, tmin, tmax, t_best, kind=None, rid=None):
         if len(self.rocks) == 0:
             return
         rel = self.rocks[:, :3] - o
@@ -321,9 +351,13 @@ class World:
             t = np.full(len(d), np.inf)
             t[m] = -b[m] - np.sqrt(disc[m])
             t[(t < tmin) | (t > tmax)] = np.inf
+            closer = t < t_best
+            if kind is not None and closer.any():
+                kind[closer] = 2
+                rid[closer] = k
             np.minimum(t_best, t, out=t_best)
 
-    def _ray_hls(self, o, d, tmin, tmax, t_best):
+    def _ray_hls(self, o, d, tmin, tmax, t_best, kind=None):
         h = self.hls
         c = np.array([h["x"], h["y"]])
         R = float(h["radius"])
@@ -341,6 +375,8 @@ class World:
         z = o[2] + d[:, 2] * t
         bad = (t < tmin) | (t > tmax) | (z < z0) | (z > z1) | ~np.isfinite(t)
         t[bad] = np.inf
+        if kind is not None:
+            kind[t < t_best] = 3
         np.minimum(t_best, t, out=t_best)
 
     # ---------------- 配信用 ----------------

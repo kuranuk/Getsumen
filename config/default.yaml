@@ -141,6 +141,11 @@ sensors:
       rate_hz: 5
       range_noise_std: 0.02 # 距離ノイズ σ [m]
       dropout: 0.01         # 欠測率 0-1
+      # 検出限界: max_range は「基準反射率の面に垂直入射」での到達距離。地面すれすれ・暗い面ほど短くなる (0 で無効)
+      reference_reflectivity: 0.10
+      ground_reflectivity: 0.12   # 月面
+      rock_reflectivity: 0.12
+      hls_reflectivity: 0.70      # HLS (白色塗装)
 
 ui:
   lidar_view_range: 40.0    # 俯瞰図の初期表示半径 [m] (ホイールで変更可)
