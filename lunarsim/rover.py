@@ -21,7 +21,6 @@ class Rover:
         self.wmax = math.radians(cfg["max_yaw_rate_deg"])
         self.acc = float(cfg["accel"])
         self.wacc = math.radians(cfg["yaw_accel_deg"])
-        self.standoff = float(cfg["auto_standoff"])
         self._lock = threading.Lock()
         self.reset()
 
@@ -31,7 +30,6 @@ class Rover:
             self.x, self.y = float(s["x"]), float(s["y"])
             self.yaw = math.radians(s.get("yaw_deg", 0.0))
             self.v = self.w = 0.0
-            self.auto = False
             self.odo = 0.0
             z, pitch, roll = self._terrain_pose(self.x, self.y, self.yaw)
             self.z, self.pitch, self.roll = z, pitch, roll
@@ -60,8 +58,6 @@ class Rover:
 
     def step(self, dt: float, cmd_v: float, cmd_w: float):
         with self._lock:
-            if self.auto:
-                cmd_v, cmd_w = self._auto_cmd()
             tv = max(-1.0, min(1.0, cmd_v)) * self.vmax
             tw = max(-1.0, min(1.0, cmd_w)) * self.wmax
             self.v += max(-self.acc * dt, min(self.acc * dt, tv - self.v))
@@ -78,7 +74,6 @@ class Rover:
             if math.hypot(nx - h["x"], ny - h["y"]) < keep and \
                math.hypot(nx - h["x"], ny - h["y"]) < math.hypot(self.x - h["x"], self.y - h["y"]):
                 nx, ny, self.v = self.x, self.y, 0.0
-                self.auto = False
             half = self.world.size / 2.0 - 2.0
             nx, ny = max(-half, min(half, nx)), max(-half, min(half, ny))
 
@@ -90,16 +85,6 @@ class Rover:
             self.z += (z - self.z) * k
             self.pitch += (pitch - self.pitch) * k
             self.roll += (roll - self.roll) * k
-
-    def _auto_cmd(self):
-        err = self.hls_bearing()
-        gap = self.hls_gap() - self.L / 2.0
-        if gap <= self.standoff:
-            self.auto = False
-            return 0.0, 0.0
-        w = max(-1.0, min(1.0, 1.5 * err))
-        v = 0.0 if abs(err) > 0.5 else 0.7 * max(0.15, min(1.0, (gap - self.standoff) / 8.0))
-        return v, w
 
     def pose(self) -> tuple[float, float, float, float, float, float]:
         with self._lock:
@@ -113,7 +98,7 @@ class Rover:
                 "t": "state", "sim_t": round(sim_t, 3),
                 "x": self.x, "y": self.y, "z": self.z,
                 "yaw": self.yaw, "pitch": self.pitch, "roll": self.roll,
-                "v": self.v, "w": self.w, "odo": self.odo, "auto": self.auto,
+                "v": self.v, "w": self.w, "odo": self.odo,
                 "hls_gap": gap - self.L / 2.0,  # 車体前端(中心線上)からHLS表面まで
                 "hls_bearing": wrap_pi(math.atan2(h["y"] - self.y, h["x"] - self.x) - self.yaw),
             }

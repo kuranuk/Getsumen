@@ -158,10 +158,6 @@ class SimServer:
         if t == "drive":
             self.cmd = (float(msg.get("v", 0.0)), float(msg.get("w", 0.0)))
             self.cmd_time = time.perf_counter()
-            if self.cmd != (0.0, 0.0):
-                self.rover.auto = False
-        elif t == "auto":
-            self.rover.auto = bool(msg.get("on", False))
         elif t == "sun":
             asyncio.get_running_loop().create_task(
                 self.set_sun(float(msg.get("az_deg", 0.0)), float(msg.get("el_deg", 1.5))))

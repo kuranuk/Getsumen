@@ -353,7 +353,7 @@ async function main() {
   $('#c-points').addEventListener('change', (e) => lidars.forEach((l) => (l.pts.visible = e.target.checked)));
 
   // ------------------------------------------------------------------ 状態
-  const st = { x: rcfg.start.x, y: rcfg.start.y, z: 0, yaw: rad(rcfg.start.yaw_deg), pitch: 0, roll: 0, v: 0, w: 0, odo: 0, auto: false, got: 0 };
+  const st = { x: rcfg.start.x, y: rcfg.start.y, z: 0, yaw: rad(rcfg.start.yaw_deg), pitch: 0, roll: 0, v: 0, w: 0, odo: 0, got: 0 };
   let lastStateTs = performance.now();
 
   function applyPose(now) {
@@ -379,7 +379,6 @@ async function main() {
         if (m.t === 'sun') { setSun(m.az, m.el); $('#sun-az').value = m.az_deg; $('#sun-el').value = m.el_deg.toFixed(1); loadShade(); }
         else if (m.t === 'state') {
           Object.assign(st, m); lastStateTs = performance.now(); st.got++;
-          $('#b-auto').classList.toggle('on', !!m.auto);
           updateHud(m);
         }
       } else onBinary(ev.data);
@@ -468,7 +467,7 @@ async function main() {
     slow = e.shiftKey;
     const a = KEYMAP[e.code];
     if (a) { e.preventDefault(); e.stopPropagation(); setAct(a, true); return; }
-    if (e.code === 'Space') { e.preventDefault(); e.stopPropagation(); send({ t: 'auto', on: false }); stopAll(); return; }
+    if (e.code === 'Space') { e.preventDefault(); e.stopPropagation(); stopAll(); return; }
     if (e.repeat) return;
     if (e.code === 'KeyR') send({ t: 'reset' });
     else if (e.code === 'KeyV') cycleView();
@@ -496,7 +495,6 @@ async function main() {
     const moving = act.size > 0;
     if (moving || sendTimer++ % 10 === 0) sendDrive();
   }, 50);
-  $('#b-auto').onclick = () => send({ t: 'auto', on: !st.auto });
 
   // ---- 視点 (追従 / 俯瞰) ----
   const views = [

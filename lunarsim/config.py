@@ -50,7 +50,6 @@ DEFAULTS: dict = {
         "max_yaw_rate_deg": 25.0,  # [deg/s]
         "accel": 0.6,              # [m/s^2]
         "yaw_accel_deg": 30.0,     # [deg/s^2]
-        "auto_standoff": 3.0,      # 自動アプローチの停止距離 (車体前端-HLS表面) [m]
     },
     "sensors": {"cameras": [], "lidars": []},
     "ui": {"lidar_view_range": 40.0, "exposure": 2.5, "view_fill": 0.25, "camera_grid_columns": 4},
