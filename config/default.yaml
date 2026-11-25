@@ -93,7 +93,7 @@ sensors:
     - {name: rear_left,  label: "後ろ左 (Rear L)",  grid: {row: 3, col: 1, span: 2}, mount: {x: -3.0, y:  1.0, z: 1.3, yaw_deg: 170, pitch_deg: -3}}
     - {name: rear_right, label: "後ろ右 (Rear R)",  grid: {row: 3, col: 3, span: 2}, mount: {x: -3.0, y: -1.0, z: 1.3, yaw_deg: 190, pitch_deg: -3}}
 
-  # 前面フラッシュライダー (視野内を一括照射 → 距離画像 → 点群)
+  # フラッシュライダー (視野内を一括照射 → 距離画像 → 点群)。前面と後面の2台
   lidar_defaults:
     min_range: 0.5        # [m]
     rate_hz: 5
@@ -114,6 +114,14 @@ sensors:
       h_pixels: 128         # 水平画素数
       v_pixels: 96          # 垂直画素数
       max_range: 60.0       # [m]
+    - name: rear_flash
+      label: 後面フラッシュライダー
+      mount: {x: -3.0, y: 0.0, z: 0.7, yaw_deg: 180, pitch_deg: -6}   # 後ろ向き
+      h_fov_deg: 40
+      v_fov_deg: 30
+      h_pixels: 128
+      v_pixels: 96
+      max_range: 60.0
 
 ui:
   lidar_view_range: 40.0    # 点群ビューの初期表示半径 [m] (ホイールで変更可)
