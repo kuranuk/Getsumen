@@ -43,7 +43,7 @@ class MoonView {
     this.addRocks();
     this.addHls();
     this.addRover();
-    this.setSun(world.sun.az, world.sun.el);
+    this.setSun(rad(world.sun.az_deg), rad(world.sun.el_deg));
   }
 
   // ---------------------------------------------------------------- 光源
@@ -573,21 +573,24 @@ class Lidars {
     ctx.stroke();
   }
 
-  /** ライダーが地面に当たる範囲 (平坦な地面を仮定した概算): 水平距離 = センサ高 / tan(俯角)。視野の上端が水平以上なら最大距離まで */
+  /** ライダーが地面に当たる範囲 (平坦な地面を仮定した概算): 視野の4隅の光線を地面まで延ばした点を結ぶ台形。
+   *  画素の行・列は原点を通る平面上にあるので、平らな地面との交線 (台形の辺) は直線になる。
+   *  地面に届かない光線 (視野の上端が水平以上) は最大距離で打ち切る。 */
   drawFootprint(cfg, sx, sy, dpr) {
-    const ctx = this.ctx, m = cfg.mount, yaw = rad(m.yaw_deg || 0), half = rad(cfg.h_fov_deg) / 2;
-    const ox = m.x || 0, oy = m.y || 0, height = (m.z || 0) + this.rover.wheel_radius;
-    const elTop = (m.pitch_deg || 0) + cfg.v_fov_deg / 2, elBottom = (m.pitch_deg || 0) - cfg.v_fov_deg / 2;
-    const far = elTop < -0.01 ? Math.min(cfg.max_range, height / Math.tan(rad(-elTop))) : cfg.max_range;
-    const near = elBottom < -0.01 ? Math.min(far, Math.max(cfg.min_range, height / Math.tan(rad(-elBottom)))) : cfg.min_range;
-    const at = (r, a) => [sx(oy + r * Math.sin(a)), sy(ox + r * Math.cos(a))];
-    const STEPS = 24;
+    const ctx = this.ctx, m = cfg.mount, th = Math.tan(rad(cfg.h_fov_deg) / 2), tv = Math.tan(rad(cfg.v_fov_deg) / 2);
+    const yaw = rad(m.yaw_deg || 0), pitch = -rad(m.pitch_deg || 0); // pitch は下向きが正 (y軸まわり)
+    const height = (m.z || 0) + this.rover.wheel_radius;             // センサの地面からの高さ
+    const corner = (u, v) => { // u: 右が正, v: 上が正 (-1..1)
+      const x = Math.cos(pitch) + v * tv * Math.sin(pitch), z = -Math.sin(pitch) + v * tv * Math.cos(pitch), y = -u * th;
+      const dx = x * Math.cos(yaw) - y * Math.sin(yaw), dy = x * Math.sin(yaw) + y * Math.cos(yaw), horizontal = Math.hypot(dx, dy);
+      const reach = z < -1e-6 ? Math.min(cfg.max_range, (height * horizontal) / -z) : cfg.max_range;
+      return [sx((m.y || 0) + (dy / horizontal) * reach), sy((m.x || 0) + (dx / horizontal) * reach)];
+    };
     ctx.strokeStyle = '#ffd23a77';
     ctx.fillStyle = '#ffd23a10';
     ctx.lineWidth = dpr;
     ctx.beginPath();
-    for (let k = 0; k <= STEPS; k++) { const q = at(far, yaw + half - (2 * half * k) / STEPS); k ? ctx.lineTo(...q) : ctx.moveTo(...q); }
-    for (let k = STEPS; k >= 0; k--) ctx.lineTo(...at(near, yaw + half - (2 * half * k) / STEPS));
+    [corner(-1, 1), corner(1, 1), corner(1, -1), corner(-1, -1)].forEach((q, i) => (i ? ctx.lineTo(...q) : ctx.moveTo(...q)));
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
@@ -749,7 +752,7 @@ async function main() {
     sunTimer = setTimeout(() => send({ t: 'sun', az_deg: +sunAz.value, el_deg: +sunEl.value }), 250);
   };
   sunAz.oninput = sunEl.oninput = onSunSlider;
-  showSun(deg(world.sun.az), deg(world.sun.el));
+  showSun(world.sun.az_deg, world.sun.el_deg);
 
   // 3Dビューの明るさ (カメラ画像には影響しない)。スライダは 2 のべき乗
   let exposure = world.ui.exposure;

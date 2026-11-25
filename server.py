@@ -23,7 +23,6 @@ import math
 import multiprocessing as mp
 import os
 import struct
-import threading
 import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -109,6 +108,17 @@ def wrap_pi(a: float) -> float:
     return (a + math.pi) % (2 * math.pi) - math.pi
 
 
+def pinhole_directions(tan_h: float, tan_v: float, width: int, height: int) -> np.ndarray:
+    """画素中心ごとの視線方向 (センサ座標: x=前, y=左, z=上, 単位ベクトル, 上の行から左→右の順).
+    tan_h/tan_v は水平/垂直の半画角の tan。画素は平面の検出器上に等間隔なので (レンズを通した平面投影)、
+    画素の行・列は原点を通る平面上に並び、平らな地面との交線は直線になる。"""
+    u = (np.arange(width) + 0.5) / width * 2 - 1    # 右が正
+    v = 1 - (np.arange(height) + 0.5) / height * 2  # 上が正
+    U, V = np.meshgrid(u, v)
+    d = np.stack([np.ones_like(U), -U * tan_h, V * tan_v], -1).reshape(-1, 3)
+    return d / np.linalg.norm(d, axis=1, keepdims=True)
+
+
 # ============================================================================
 # 3. 月面: 高さマップ・岩・太陽の影・レイキャスト
 # ============================================================================
@@ -172,7 +182,7 @@ class World:
         # --- 岩 ---
         self.rocks = self._place_rocks(rng, wc["rocks"])  # (m,4): x,y,z,r
         self.hls_z0 = float(self.height(hc["x"], hc["y"]))
-        self.ambient = float(wc["sun"].get("ambient", 0.03))
+        self.ambient = float(wc["sun"]["ambient"])
         self.set_sun(wc["sun"]["azimuth_deg"], wc["sun"]["elevation_deg"])
 
     # ---------------- 生成 ----------------
@@ -224,7 +234,7 @@ class World:
         nd = k * q * np.exp(-q * Dg) / (math.pi * Dg ** 2 / 4.0)
         cdf = np.concatenate([[0], np.cumsum(0.5 * (nd[1:] + nd[:-1]) * np.diff(Dg))])
         total = cdf[-1] * self.size ** 2
-        n = int(min(rc.get("max_count", 2500), rng.poisson(total)))
+        n = int(min(rc["max_count"], rng.poisson(total)))
         D = np.interp(rng.random(n) * cdf[-1], cdf, Dg)
         r = D / 2.0
 
@@ -232,7 +242,7 @@ class World:
         xy = rng.uniform(-half, half, (n, 2))
         # 一部をクレータ縁へ
         big = [c for c in self.craters if c[2] >= 4.0]
-        nrim = int(n * float(rc.get("rim_fraction", 0.0))) if big else 0
+        nrim = int(n * float(rc["rim_fraction"])) if big else 0
         if nrim:
             w = np.array([c[2] for c in big]); w = w / w.sum()
             ci = rng.choice(len(big), nrim, p=w)
@@ -254,11 +264,10 @@ class World:
         self.sun_azimuth = math.radians(azimuth_deg % 360.0)
         self.sun_elevation = math.radians(max(0.0, min(10.0, elevation_deg)))
 
-    def bake_shade(self, azimuth: float | None = None, elevation: float | None = None) -> np.ndarray:
+    def bake_shade(self) -> np.ndarray:
         """地形自身が落とす影 (ホライズン判定). 戻り値 uint8 [iy,ix] (0=影, 255=日照).
-        太陽の視直径 (0.53deg) 分の半影を含む. 岩/HLS/ローバーの影は描画側のシャドウマップで扱う."""
-        az = self.sun_azimuth if azimuth is None else azimuth
-        el = self.sun_elevation if elevation is None else elevation
+        太陽の視直径 (0.53deg) 分の半影を含む. 岩の影は bake_rock_shade, HLS/ローバーの影は影レイ (RayTracer) で求める."""
+        az, el = self.sun_azimuth, self.sun_elevation
         dx, dy = math.cos(az), math.sin(az)
         tan_el = math.tan(el)
         H = self.heights.astype(np.float32)
@@ -483,23 +492,17 @@ class World:
             n[m] = v
         return n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-9)
 
-    # ---------------- 配信用 ----------------
-    def describe(self) -> dict:
-        return {
-            "size": self.size, "res": self.res, "n": self.n, "origin": self.origin,
-            "sun_azimuth": self.sun_azimuth, "sun_elevation": self.sun_elevation,
-            "hls_z0": self.hls_z0,
-        }
-
 
 # ============================================================================
 # 4. ローバー
 # ============================================================================
 
 class Rover:
+    """ローバー。asyncio の1スレッドからしか触らないので、排他制御はしない。"""
+
     def __init__(self, cfg: dict, world: World):
-        self.c = cfg
         self.world = world
+        self.start = cfg["start"]
         self.L = float(cfg["length"])
         self.W = float(cfg["width"])
         self.wheel_r = float(cfg["wheel_radius"])
@@ -507,75 +510,59 @@ class Rover:
         self.wmax = math.radians(cfg["max_yaw_rate_deg"])
         self.acc = float(cfg["accel"])
         self.wacc = math.radians(cfg["yaw_accel_deg"])
-        self._lock = threading.Lock()
         self.reset()
 
     def reset(self):
-        s = self.c["start"]
-        with self._lock:
-            self.x, self.y = float(s["x"]), float(s["y"])
-            self.yaw = math.radians(s.get("yaw_deg", 0.0))
-            self.v = self.w = 0.0
-            self.odo = 0.0
-            z, pitch, roll = self._terrain_pose(self.x, self.y, self.yaw)
-            self.z, self.pitch, self.roll = z, pitch, roll
+        self.x, self.y = float(self.start["x"]), float(self.start["y"])
+        self.yaw = math.radians(self.start["yaw_deg"])
+        self.v = self.w = 0.0
+        self.odo = 0.0
+        self.z, self.pitch, self.roll = self._terrain_pose(self.x, self.y, self.yaw)
 
-    # ---- 地形追従 ----
     def _terrain_pose(self, x, y, yaw):
+        """前後左右の4点の地面高さから、車体の高さ・ピッチ(機首下げが正)・ロールを求める."""
         a, b = self.L * 0.4, self.W / 2.0
         cy, sy = math.cos(yaw), math.sin(yaw)
         pts = np.array([[a, 0], [-a, 0], [0, b], [0, -b]], float)
-        wx = x + cy * pts[:, 0] - sy * pts[:, 1]
-        wy = y + sy * pts[:, 0] + cy * pts[:, 1]
-        hf, hr, hl, hrt = self.world.height(wx, wy)
-        slope_f = (hf - hr) / (2 * a)
-        slope_l = (hl - hrt) / (2 * b)
-        z = (hf + hr + hl + hrt) / 4.0 + self.wheel_r
-        return float(z), float(-math.atan(slope_f)), float(math.atan(slope_l))
+        front, rear, left, right = self.world.height(x + cy * pts[:, 0] - sy * pts[:, 1], y + sy * pts[:, 0] + cy * pts[:, 1])
+        z = (front + rear + left + right) / 4.0 + self.wheel_r
+        return float(z), float(-math.atan((front - rear) / (2 * a))), float(math.atan((left - right) / (2 * b)))
 
-    # ---- 運動 ----
     def step(self, dt: float, cmd_v: float, cmd_w: float):
-        with self._lock:
-            tv = max(-1.0, min(1.0, cmd_v)) * self.vmax
-            tw = max(-1.0, min(1.0, cmd_w)) * self.wmax
-            self.v += max(-self.acc * dt, min(self.acc * dt, tv - self.v))
-            self.w += max(-self.wacc * dt, min(self.wacc * dt, tw - self.w))
+        """指令 (前進, 旋回: -1..1) を加速度制限つきで追従して dt [s] 進める."""
+        tv = max(-1.0, min(1.0, cmd_v)) * self.vmax
+        tw = max(-1.0, min(1.0, cmd_w)) * self.wmax
+        self.v += max(-self.acc * dt, min(self.acc * dt, tv - self.v))
+        self.w += max(-self.wacc * dt, min(self.wacc * dt, tw - self.w))
 
-            nyaw = self.yaw + self.w * dt
-            mid = 0.5 * (self.yaw + nyaw)
-            nx = self.x + self.v * math.cos(mid) * dt
-            ny = self.y + self.v * math.sin(mid) * dt
+        yaw = self.yaw + self.w * dt
+        mid = 0.5 * (self.yaw + yaw)
+        x = self.x + self.v * math.cos(mid) * dt
+        y = self.y + self.v * math.sin(mid) * dt
 
-            # HLS との衝突 (円近似) -> 進入を止める
-            h = self.world.hls
-            keep = h["radius"] + self.L / 2.0
-            if math.hypot(nx - h["x"], ny - h["y"]) < keep and \
-               math.hypot(nx - h["x"], ny - h["y"]) < math.hypot(self.x - h["x"], self.y - h["y"]):
-                nx, ny, self.v = self.x, self.y, 0.0
-            half = self.world.size / 2.0 - 2.0
-            nx, ny = max(-half, min(half, nx)), max(-half, min(half, ny))
+        # HLS (円柱) には近づく向きの移動で入れない
+        h = self.world.hls
+        d_new, d_old = math.hypot(x - h["x"], y - h["y"]), math.hypot(self.x - h["x"], self.y - h["y"])
+        if d_new < h["radius"] + self.L / 2.0 and d_new < d_old:
+            x, y, self.v = self.x, self.y, 0.0
+        half = self.world.size / 2.0 - 2.0
+        x, y = max(-half, min(half, x)), max(-half, min(half, y))
 
-            self.odo += math.hypot(nx - self.x, ny - self.y)
-            self.x, self.y, self.yaw = nx, ny, wrap_pi(nyaw)
+        self.odo += math.hypot(x - self.x, y - self.y)
+        self.x, self.y, self.yaw = x, y, wrap_pi(yaw)
 
-            z, pitch, roll = self._terrain_pose(self.x, self.y, self.yaw)
-            k = min(1.0, dt * 8.0)  # サスペンションの簡易ローパス
-            self.z += (z - self.z) * k
-            self.pitch += (pitch - self.pitch) * k
-            self.roll += (roll - self.roll) * k
+        z, pitch, roll = self._terrain_pose(self.x, self.y, self.yaw)
+        k = min(1.0, dt * 8.0)  # サスペンションの簡易ローパス
+        self.z += (z - self.z) * k
+        self.pitch += (pitch - self.pitch) * k
+        self.roll += (roll - self.roll) * k
 
     def pose(self) -> tuple[float, float, float, float, float, float]:
-        with self._lock:
-            return (self.x, self.y, self.z, self.yaw, self.pitch, self.roll)
+        return (self.x, self.y, self.z, self.yaw, self.pitch, self.roll)
 
-    def state(self, sim_t: float) -> dict:
-        with self._lock:
-            return {
-                "t": "state", "sim_t": round(sim_t, 3),
-                "x": self.x, "y": self.y, "z": self.z,
-                "yaw": self.yaw, "pitch": self.pitch, "roll": self.roll,
-                "v": self.v, "w": self.w, "odo": self.odo,
-            }
+    def state(self) -> dict:
+        return {"t": "state", "x": self.x, "y": self.y, "z": self.z, "yaw": self.yaw, "pitch": self.pitch,
+                "roll": self.roll, "v": self.v, "w": self.w, "odo": self.odo}
 
 
 # ============================================================================
@@ -585,8 +572,6 @@ class Rover:
 class FlashLidar:
     def __init__(self, cfg: dict, world: World, seed: int = 0):
         self.world = world
-        self.name = cfg["name"]
-        self.rate = float(cfg["rate_hz"])
         self.tmin = float(cfg["min_range"])
         self.tmax = float(cfg["max_range"])
         self.noise = float(cfg["range_noise_std"])
@@ -596,11 +581,9 @@ class FlashLidar:
         self.rho = np.array([0.0, cfg["ground_reflectivity"], cfg["rock_reflectivity"], cfg["hls_reflectivity"]])
         self.rng = np.random.default_rng(seed)
 
-        # 画素ごとの方向 (センサ座標: x=前, y=左, z=上) を車体座標へ
-        az = np.radians(np.linspace(cfg["h_fov_deg"] / 2, -cfg["h_fov_deg"] / 2, int(cfg["h_pixels"])))
-        el = np.radians(np.linspace(cfg["v_fov_deg"] / 2, -cfg["v_fov_deg"] / 2, int(cfg["v_pixels"])))
-        AZ, EL = np.meshgrid(az, el)
-        d = np.stack([np.cos(EL) * np.cos(AZ), np.cos(EL) * np.sin(AZ), np.sin(EL)], -1).reshape(-1, 3)
+        # 画素ごとの方向 (カメラと同じ平面投影) を車体座標へ
+        d = pinhole_directions(math.tan(math.radians(cfg["h_fov_deg"]) / 2), math.tan(math.radians(cfg["v_fov_deg"]) / 2),
+                               int(cfg["h_pixels"]), int(cfg["v_pixels"]))
         self.m_pos = mount_position(cfg["mount"])
         self.dirs_body = d @ mount_rotation(cfg["mount"]).T
 
@@ -694,18 +677,13 @@ class CameraModel:
     """ピンホールカメラ: 画素ごとの視線方向 (車体座標) と取付姿勢."""
 
     def __init__(self, cfg: dict, index: int):
-        self.index, self.cfg, self.name = index, cfg, cfg["name"]
+        self.index, self.cfg = index, cfg
         self.w, self.h = int(cfg["width"]), int(cfg["height"])
         self.th = math.tan(math.radians(cfg["fov_deg"]) / 2.0)  # 水平画角の半分の tan
         self.tv = self.th * self.h / self.w
-        u = (np.arange(self.w) + 0.5) / self.w * 2 - 1   # 右が正
-        v = 1 - (np.arange(self.h) + 0.5) / self.h * 2   # 上が正
-        U, V = np.meshgrid(u, v)
-        d = np.stack([np.ones_like(U), -U * self.th, V * self.tv], -1).reshape(-1, 3)
-        d /= np.linalg.norm(d, axis=1, keepdims=True)
         self.m_pos = mount_position(cfg["mount"])
         self.m_rot = mount_rotation(cfg["mount"])
-        self.dirs_body = d @ self.m_rot.T
+        self.dirs_body = pinhole_directions(self.th, self.tv, self.w, self.h) @ self.m_rot.T
         self.pix_omega = (2 * self.th / self.w) * (2 * self.tv / self.h)  # 画素の立体角 [sr]
 
 
@@ -937,7 +915,6 @@ class SimServer:
         self.clients: set[web.WebSocketResponse] = set()
         self.cmd = (0.0, 0.0)  # (前進, 旋回) の指令 -1..1
         self.cmd_time = 0.0
-        self.sim_t = 0.0
         # 太陽が決める影 (方位/仰角を変えると再計算する)
         self.shade = self.world.bake_shade()
         self.rock_shade = self.world.bake_rock_shade()
@@ -965,30 +942,26 @@ class SimServer:
                 az_r, el_r, shade, rock_shade = await loop.run_in_executor(self.pool, worker_bake, az, el)
                 self.world.sun_azimuth, self.world.sun_elevation = az_r, el_r
                 self.shade, self.rock_shade = shade, rock_shade
-                await self._broadcast(json.dumps(self.sun_message()))
+                await self._broadcast(json.dumps({"t": "sun", **self.sun_deg()}))
         finally:
             self._sun_busy = False
 
-    def sun_message(self) -> dict:
-        az, el = self.world.sun_azimuth, self.world.sun_elevation
-        return {"t": "sun", "az": az, "el": el, "az_deg": math.degrees(az), "el_deg": math.degrees(el)}
+    def sun_deg(self) -> dict:
+        return {"az_deg": math.degrees(self.world.sun_azimuth), "el_deg": math.degrees(self.world.sun_elevation)}
 
     # ---------------- 配信用データ ----------------
     def world_json(self) -> dict:
         c = self.cfg
         return {
-            "terrain": self.world.describe(),
+            "terrain": {"size": self.world.size, "res": self.world.res, "n": self.world.n, "hls_z0": self.world.hls_z0},
             "rocks": [[round(float(v), 3) for v in r] for r in self.world.rocks],
             "hls": self.world.hls,
             "rover": c["rover"],
             "cameras": c["sensors"]["cameras"],
             "lidars": c["sensors"]["lidars"],
             "ui": c["ui"],
-            "sun": {**self.sun_message(), "ambient": self.world.ambient},
+            "sun": {**self.sun_deg(), "ambient": self.world.ambient},
         }
-
-    def heightmap_bytes(self) -> bytes:
-        return self.world.heights.astype("<f4").tobytes()
 
     # ---------------- ループ ----------------
     async def physics_loop(self):
@@ -1003,14 +976,13 @@ class SimServer:
             if now - self.cmd_time > 1.0:  # 指令途絶 -> 停止
                 v = w = 0.0
             self.rover.step(dt, v, w)
-            self.sim_t += dt
 
     async def state_loop(self):
         period = 1.0 / float(self.cfg["simulation"]["state_hz"])
         while True:
             await asyncio.sleep(period)
             if self.clients:
-                await self._broadcast(json.dumps(self.rover.state(self.sim_t)))
+                await self._broadcast(json.dumps(self.rover.state()))
 
     async def _every(self, hz: float, job):
         """job() を約 hz で繰り返す (接続中のクライアントがいる間だけ)。"""
@@ -1023,7 +995,7 @@ class SimServer:
 
     async def lidar_job(self, idx: int):
         pts = await asyncio.get_running_loop().run_in_executor(self.pool, worker_scan_lidar, idx, self.rover.pose())
-        await self._broadcast(struct.pack("<BBxxIf", MSG_LIDAR, idx, len(pts), self.sim_t) + pts.tobytes())
+        await self._broadcast(struct.pack("<BBxxI4x", MSG_LIDAR, idx, len(pts)) + pts.tobytes())
 
     async def camera_job(self, name: str):
         """レイトレーシングで画像を生成して配信 (HDR float16, 線形). 露出/ノイズ等はブラウザ側で加える."""
@@ -1031,7 +1003,7 @@ class SimServer:
         img = await asyncio.get_running_loop().run_in_executor(
             self.pool, worker_render_camera, name, pose,
             self.world.sun_azimuth, self.world.sun_elevation, self.shade, self.rock_shade)
-        header = struct.pack("<BBHHxxf6f", MSG_CAMERA, cam.index, cam.w, cam.h, self.sim_t, *pose)
+        header = struct.pack("<BBHH6x6f", MSG_CAMERA, cam.index, cam.w, cam.h, *pose)
         await self._broadcast(header + img.tobytes())
 
     async def _broadcast(self, data):
@@ -1064,7 +1036,6 @@ class SimServer:
 def create_app(cfg: dict) -> web.Application:
     sim = SimServer(cfg)
     app = web.Application()
-    app["sim"] = sim
 
     async def index(_):
         return web.FileResponse(ROOT / "web" / "index.html")
@@ -1073,7 +1044,7 @@ def create_app(cfg: dict) -> web.Application:
         return web.json_response(sim.world_json())
 
     async def api_heightmap(_):
-        return web.Response(body=sim.heightmap_bytes(), content_type="application/octet-stream")
+        return web.Response(body=sim.world.heights.astype("<f4").tobytes(), content_type="application/octet-stream")
 
     async def api_shade(_):
         return web.Response(body=sim.shade.tobytes(), content_type="application/octet-stream")
