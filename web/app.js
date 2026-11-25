@@ -553,17 +553,16 @@ class Lidars {
   }
 
   /** ライダーが地面に当たる範囲 (平坦な地面を仮定した概算): 視野の縁 (方位・仰角) の光線を地面まで延ばした点を結ぶ。
-   *  仰角が一定の縁は弧になる。地面に届かない光線 (視野の上端が水平以上) は最大距離で打ち切る。 */
+   *  方位は鉛直軸まわり、仰角は水平面から測る (俯角は仰角に足す) ので、近い端・遠い端はセンサ直下を中心とする弧、左右の端は放射状の直線 = 扇形。
+   *  地面に届かない光線 (視野の上端が水平以上) は最大距離で打ち切る。 */
   drawFootprint(cfg, sx, sy, dpr) {
     const ctx = this.ctx, m = cfg.mount, half = rad(cfg.h_fov_deg) / 2, tilt = rad(cfg.v_fov_deg) / 2;
-    const yaw = rad(m.yaw_deg || 0), pitch = -rad(m.pitch_deg || 0); // pitch は下向きが正 (y軸まわり)
-    const height = (m.z || 0) + this.rover.wheel_radius;             // センサの地面からの高さ
-    const at = (az, el) => { // センサ座標の方位・仰角の光線 -> 車体座標 -> 地面との交点 (上から見た位置)
-      const x = Math.cos(el) * Math.cos(az), y = Math.cos(el) * Math.sin(az), z = Math.sin(el);
-      const x1 = x * Math.cos(pitch) + z * Math.sin(pitch), z1 = -x * Math.sin(pitch) + z * Math.cos(pitch);
-      const dx = x1 * Math.cos(yaw) - y * Math.sin(yaw), dy = x1 * Math.sin(yaw) + y * Math.cos(yaw), horizontal = Math.hypot(dx, dy);
-      const reach = z1 < -1e-6 ? Math.min(cfg.max_range, (height * horizontal) / -z1) : cfg.max_range;
-      return [sx((m.y || 0) + (dy / horizontal) * reach), sy((m.x || 0) + (dx / horizontal) * reach)];
+    const yaw = rad(m.yaw_deg || 0), pitchUp = rad(m.pitch_deg || 0);
+    const height = (m.z || 0) + this.rover.wheel_radius; // センサの地面からの高さ
+    const at = (az, el) => { // 方位・仰角 (視野内) の光線 -> 地面との交点 (上から見た位置)
+      const e = el + pitchUp, a = az + yaw;
+      const reach = e < -1e-6 ? Math.min(cfg.max_range, height / Math.tan(-e)) : cfg.max_range; // 水平距離
+      return [sx((m.y || 0) + reach * Math.sin(a)), sy((m.x || 0) + reach * Math.cos(a))];
     };
     const STEPS = 24, lerp = (a, b, k) => a + ((b - a) * k) / STEPS;
     const border = [];

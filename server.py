@@ -483,14 +483,16 @@ class FlashLidar:
         self.rho = np.array([0.0, cfg["ground_reflectivity"], cfg["hls_reflectivity"]])
         self.rng = np.random.default_rng(seed)
 
-        # 画素ごとの方向: 方位・仰角を等間隔に振る (センサ座標: x=前, y=左, z=上)。これを取付姿勢で傾けて車体座標にする。
-        # ピンホール(平面投影)ではないので、平らな地面では 仰角が一定の行は弧になる (最近の行が弧を描く)。
+        # 画素ごとの方向: 方位は鉛直軸まわり (左が正)、仰角は水平面から測り、取付の pitch_deg (上向き正) を仰角に足す。
+        # ピンホール(平面投影)ではない。平らな地面では、仰角が一定の行は センサ直下を中心とする弧になり、
+        # 上から見た点群は、近い端も遠い端も弧で、左右の端が放射状の直線の 扇形 になる。
+        m = cfg["mount"]
         az = np.radians(np.linspace(cfg["h_fov_deg"] / 2, -cfg["h_fov_deg"] / 2, int(cfg["h_pixels"])))
-        el = np.radians(np.linspace(cfg["v_fov_deg"] / 2, -cfg["v_fov_deg"] / 2, int(cfg["v_pixels"])))
+        el = np.radians(np.linspace(cfg["v_fov_deg"] / 2, -cfg["v_fov_deg"] / 2, int(cfg["v_pixels"]))) + math.radians(m.get("pitch_deg", 0.0))
         AZ, EL = np.meshgrid(az, el)
         d = np.stack([np.cos(EL) * np.cos(AZ), np.cos(EL) * np.sin(AZ), np.sin(EL)], -1).reshape(-1, 3)
-        self.m_pos = mount_position(cfg["mount"])
-        self.dirs_body = d @ mount_rotation(cfg["mount"]).T
+        self.m_pos = mount_position(m)
+        self.dirs_body = d @ rot_zyx(math.radians(m.get("yaw_deg", 0.0)), 0.0, 0.0).T
 
     def scan(self, pose) -> np.ndarray:
         """pose=(x,y,z,yaw,pitch,roll). 戻り値: (n,4) float32 [x,y,z,range] (車体座標系)."""

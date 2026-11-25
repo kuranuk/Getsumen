@@ -85,9 +85,9 @@ class WorldTests(unittest.TestCase):
         far = np.hypot(pts[:, 0] - c["mount"]["x"], pts[:, 1]).max()
         self.assertLess(far, 1.3 / math.tan(math.radians(5)) * 1.5)  # 視野の上端は -5° (期待 約15 m)
 
-    def test_lidar_nearest_row_is_an_arc(self):
-        # 画素方向は方位・仰角を等間隔に振る球面走査 (ピンホールではない)。
-        # 平らな地面では、仰角が一定の行は弧になる: 最近の行は、中央より両端が手前 (車体の後ろ寄り) になる。
+    def test_lidar_rows_are_arcs_and_top_view_is_a_fan(self):
+        # 画素方向は 方位 (鉛直軸まわり) x 仰角 (水平面から) の球面走査で、ピンホールではない。
+        # 平らな地面では、各行はセンサ直下を中心とする弧、左右の端は放射状の直線になり、上から見ると扇形になる。
         import copy
         flat = copy.copy(self.world)
         flat.heights = np.zeros_like(self.world.heights)
@@ -101,13 +101,17 @@ class WorldTests(unittest.TestCase):
         pts = FlashLidar(c, flat).scan(rover.pose())
         hp, vp = c["h_pixels"], c["v_pixels"]
         self.assertEqual(len(pts), hp * vp)
-        near = pts[:, :2].reshape(vp, hp, 2)[-1]  # 最近の行 (車体座標の x=前, y=左)
-        self.assertGreater(float(near[hp // 2, 0] - near[0, 0]), 0.05)    # 中央が前、左端が手前
-        self.assertGreater(float(near[hp // 2, 0] - near[-1, 0]), 0.05)   # 右端も手前
-        self.assertAlmostEqual(float(near[0, 0]), float(near[-1, 0]), delta=0.01)  # 左右対称
-        sensor = np.array([c["mount"]["x"], c["mount"]["y"]])
-        r = np.hypot(*(near - sensor).T)                                  # センサ直下からの距離はほぼ一定 (弧)
-        self.assertLess(float(np.ptp(r)), 0.25 * float(r.mean()))
+        grid = pts[:, :2].reshape(vp, hp, 2)  # 行(上=最遠) x 列(左→右) の (x=前, y=左), 車体座標
+        sensor = np.array([c["mount"]["x"], c["mount"]["y"]])  # センサ直下 (上から見た原点)
+        for name, row in (("最遠", grid[0]), ("最近", grid[-1])):
+            r = np.hypot(*(row - sensor).T)
+            self.assertLess(float(np.ptp(r)), 1e-3, name)                       # センサ直下からの距離が一定 = 弧
+            self.assertGreater(float(row[hp // 2, 0] - row[0, 0]), 0.05, name)  # 弧: 中央が前、両端が手前
+        for edge in (grid[:, 0], grid[:, -1]):                                   # 左端/右端の列は放射状の直線
+            v = edge - sensor
+            cross = v[:, 0] * v[0, 1] - v[:, 1] * v[0, 0]
+            self.assertLess(float(np.abs(cross / np.linalg.norm(v, axis=1)).max()), 1e-3)
+        self.assertGreater(float(np.ptp(grid[0][:, 1])), float(np.ptp(grid[-1][:, 1])))  # 遠いほど広い
 
     def test_rover_drives(self):
         rover = Rover(self.cfg["rover"], self.world)
