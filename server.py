@@ -109,9 +109,8 @@ def wrap_pi(a: float) -> float:
 
 
 def pinhole_directions(tan_h: float, tan_v: float, width: int, height: int) -> np.ndarray:
-    """画素中心ごとの視線方向 (センサ座標: x=前, y=左, z=上, 単位ベクトル, 上の行から左→右の順).
-    tan_h/tan_v は水平/垂直の半画角の tan。画素は平面の検出器上に等間隔なので (レンズを通した平面投影)、
-    画素の行・列は原点を通る平面上に並び、平らな地面との交線は直線になる。"""
+    """カメラの画素中心ごとの視線方向 (センサ座標: x=前, y=左, z=上, 単位ベクトル, 上の行から左→右の順).
+    tan_h/tan_v は水平/垂直の半画角の tan (平面の撮像素子 = ピンホール)。"""
     u = (np.arange(width) + 0.5) / width * 2 - 1    # 右が正
     v = 1 - (np.arange(height) + 0.5) / height * 2  # 上が正
     U, V = np.meshgrid(u, v)
@@ -484,9 +483,12 @@ class FlashLidar:
         self.rho = np.array([0.0, cfg["ground_reflectivity"], cfg["hls_reflectivity"]])
         self.rng = np.random.default_rng(seed)
 
-        # 画素ごとの方向 (カメラと同じ平面投影) を車体座標へ
-        d = pinhole_directions(math.tan(math.radians(cfg["h_fov_deg"]) / 2), math.tan(math.radians(cfg["v_fov_deg"]) / 2),
-                               int(cfg["h_pixels"]), int(cfg["v_pixels"]))
+        # 画素ごとの方向: 方位・仰角を等間隔に振る (センサ座標: x=前, y=左, z=上)。これを取付姿勢で傾けて車体座標にする。
+        # ピンホール(平面投影)ではないので、平らな地面では 仰角が一定の行は弧になる (最近の行が弧を描く)。
+        az = np.radians(np.linspace(cfg["h_fov_deg"] / 2, -cfg["h_fov_deg"] / 2, int(cfg["h_pixels"])))
+        el = np.radians(np.linspace(cfg["v_fov_deg"] / 2, -cfg["v_fov_deg"] / 2, int(cfg["v_pixels"])))
+        AZ, EL = np.meshgrid(az, el)
+        d = np.stack([np.cos(EL) * np.cos(AZ), np.cos(EL) * np.sin(AZ), np.sin(EL)], -1).reshape(-1, 3)
         self.m_pos = mount_position(cfg["mount"])
         self.dirs_body = d @ mount_rotation(cfg["mount"]).T
 

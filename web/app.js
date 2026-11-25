@@ -552,24 +552,30 @@ class Lidars {
     ctx.stroke();
   }
 
-  /** ライダーが地面に当たる範囲 (平坦な地面を仮定した概算): 視野の4隅の光線を地面まで延ばした点を結ぶ台形。
-   *  画素の行・列は原点を通る平面上にあるので、平らな地面との交線 (台形の辺) は直線になる。
-   *  地面に届かない光線 (視野の上端が水平以上) は最大距離で打ち切る。 */
+  /** ライダーが地面に当たる範囲 (平坦な地面を仮定した概算): 視野の縁 (方位・仰角) の光線を地面まで延ばした点を結ぶ。
+   *  仰角が一定の縁は弧になる。地面に届かない光線 (視野の上端が水平以上) は最大距離で打ち切る。 */
   drawFootprint(cfg, sx, sy, dpr) {
-    const ctx = this.ctx, m = cfg.mount, th = Math.tan(rad(cfg.h_fov_deg) / 2), tv = Math.tan(rad(cfg.v_fov_deg) / 2);
+    const ctx = this.ctx, m = cfg.mount, half = rad(cfg.h_fov_deg) / 2, tilt = rad(cfg.v_fov_deg) / 2;
     const yaw = rad(m.yaw_deg || 0), pitch = -rad(m.pitch_deg || 0); // pitch は下向きが正 (y軸まわり)
     const height = (m.z || 0) + this.rover.wheel_radius;             // センサの地面からの高さ
-    const corner = (u, v) => { // u: 右が正, v: 上が正 (-1..1)
-      const x = Math.cos(pitch) + v * tv * Math.sin(pitch), z = -Math.sin(pitch) + v * tv * Math.cos(pitch), y = -u * th;
-      const dx = x * Math.cos(yaw) - y * Math.sin(yaw), dy = x * Math.sin(yaw) + y * Math.cos(yaw), horizontal = Math.hypot(dx, dy);
-      const reach = z < -1e-6 ? Math.min(cfg.max_range, (height * horizontal) / -z) : cfg.max_range;
+    const at = (az, el) => { // センサ座標の方位・仰角の光線 -> 車体座標 -> 地面との交点 (上から見た位置)
+      const x = Math.cos(el) * Math.cos(az), y = Math.cos(el) * Math.sin(az), z = Math.sin(el);
+      const x1 = x * Math.cos(pitch) + z * Math.sin(pitch), z1 = -x * Math.sin(pitch) + z * Math.cos(pitch);
+      const dx = x1 * Math.cos(yaw) - y * Math.sin(yaw), dy = x1 * Math.sin(yaw) + y * Math.cos(yaw), horizontal = Math.hypot(dx, dy);
+      const reach = z1 < -1e-6 ? Math.min(cfg.max_range, (height * horizontal) / -z1) : cfg.max_range;
       return [sx((m.y || 0) + (dy / horizontal) * reach), sy((m.x || 0) + (dx / horizontal) * reach)];
     };
+    const STEPS = 24, lerp = (a, b, k) => a + ((b - a) * k) / STEPS;
+    const border = [];
+    for (let k = 0; k < STEPS; k++) border.push(at(lerp(half, -half, k), tilt));   // 上端 (最遠): 左 -> 右
+    for (let k = 0; k < STEPS; k++) border.push(at(-half, lerp(tilt, -tilt, k)));  // 右端: 上 -> 下
+    for (let k = 0; k < STEPS; k++) border.push(at(lerp(-half, half, k), -tilt));  // 下端 (最近): 右 -> 左
+    for (let k = 0; k < STEPS; k++) border.push(at(half, lerp(-tilt, tilt, k)));   // 左端: 下 -> 上
     ctx.strokeStyle = '#ffd23a77';
     ctx.fillStyle = '#ffd23a10';
     ctx.lineWidth = dpr;
     ctx.beginPath();
-    [corner(-1, 1), corner(1, 1), corner(1, -1), corner(-1, -1)].forEach((q, i) => (i ? ctx.lineTo(...q) : ctx.moveTo(...q)));
+    border.forEach((q, i) => (i ? ctx.lineTo(...q) : ctx.moveTo(...q)));
     ctx.closePath();
     ctx.fill();
     ctx.stroke();

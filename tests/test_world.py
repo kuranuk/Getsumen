@@ -85,38 +85,29 @@ class WorldTests(unittest.TestCase):
         far = np.hypot(pts[:, 0] - c["mount"]["x"], pts[:, 1]).max()
         self.assertLess(far, 1.3 / math.tan(math.radians(5)) * 1.5)  # 視野の上端は -5° (期待 約15 m)
 
-    def test_lidar_footprint_on_flat_ground_is_a_trapezoid(self):
-        # 平らな地面でも俯角を付けると、球面走査なら最遠の行は曲がる。平面投影なら
-        # 最遠の行は直線、左右の端は車両から放射状の直線になり、上から見た点群は遠いほど広がる台形になる。
+    def test_lidar_nearest_row_is_an_arc(self):
+        # 画素方向は方位・仰角を等間隔に振る球面走査 (ピンホールではない)。
+        # 平らな地面では、仰角が一定の行は弧になる: 最近の行は、中央より両端が手前 (車体の後ろ寄り) になる。
         import copy
         flat = copy.copy(self.world)
         flat.heights = np.zeros_like(self.world.heights)
         cfg = load_config()
         c = cfg["sensors"]["lidars"][0]
-        c.update(range_noise_std=0.0, dropout=0.0)
+        c.update(range_noise_std=0.0, dropout=0.0, reference_reflectivity=1e-9)  # 検出限界は外して形だけを見る
         c["mount"]["pitch_deg"] = -20
         rover = Rover(cfg["rover"], flat)
         rover.x, rover.y, rover.yaw = -9.0, 0.0, math.pi
         rover.z, rover.pitch, rover.roll = 0.6, 0.0, 0.0
         pts = FlashLidar(c, flat).scan(rover.pose())
         hp, vp = c["h_pixels"], c["v_pixels"]
-        self.assertEqual(len(pts), hp * vp)          # 検出限界で欠けない
-        grid = pts[:, :2].reshape(vp, hp, 2)         # 行(上=最遠) x 列(左→右) の (x, y)
-        far, near = grid[0], grid[-1]
-        self.assertLess(float(np.ptp(far[:, 0])), 0.01)   # 最遠の行は x が一定 = 直線
-        self.assertLess(float(np.ptp(near[:, 0])), 0.01)  # 最近の行も直線
-        self.assertGreater(float(np.ptp(far[:, 1])), float(np.ptp(near[:, 1])))  # 遠いほど広い
-        # 左端/右端の列も直線 (x = a*y + b)。2本は中心線上の1点に収束する扇形で、その点はセンサ直下より H*tan(俯角) だけ後ろ
-        apex = []
-        for edge in (grid[:, 0], grid[:, -1]):
-            A = np.stack([edge[:, 1], np.ones(vp)], 1)
-            (slope, intercept), *_ = np.linalg.lstsq(A, edge[:, 0], rcond=None)
-            self.assertLess(float(np.abs(A @ [slope, intercept] - edge[:, 0]).max()), 0.01)
-            apex.append(intercept)  # y=0 での x
-        sensor_height = c["mount"]["z"] + cfg["rover"]["wheel_radius"]
-        expected = c["mount"]["x"] - sensor_height * math.tan(math.radians(20))
-        self.assertAlmostEqual(apex[0], apex[1], delta=0.01)
-        self.assertAlmostEqual(apex[0], expected, delta=0.05)
+        self.assertEqual(len(pts), hp * vp)
+        near = pts[:, :2].reshape(vp, hp, 2)[-1]  # 最近の行 (車体座標の x=前, y=左)
+        self.assertGreater(float(near[hp // 2, 0] - near[0, 0]), 0.05)    # 中央が前、左端が手前
+        self.assertGreater(float(near[hp // 2, 0] - near[-1, 0]), 0.05)   # 右端も手前
+        self.assertAlmostEqual(float(near[0, 0]), float(near[-1, 0]), delta=0.01)  # 左右対称
+        sensor = np.array([c["mount"]["x"], c["mount"]["y"]])
+        r = np.hypot(*(near - sensor).T)                                  # センサ直下からの距離はほぼ一定 (弧)
+        self.assertLess(float(np.ptp(r)), 0.25 * float(r.mean()))
 
     def test_rover_drives(self):
         rover = Rover(self.cfg["rover"], self.world)
