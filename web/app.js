@@ -38,7 +38,6 @@ class MoonView {
     container.appendChild(this.renderer.domElement);
 
     this.addLights();
-    this.addStars();
     this.addTerrain(heights);
     this.addHls();
     this.addRover();
@@ -70,19 +69,6 @@ class MoonView {
   setSun(azRad, elRad) {
     this.sunDir.set(Math.cos(elRad) * Math.cos(azRad), Math.cos(elRad) * Math.sin(azRad), Math.sin(elRad));
     this.sunDisc.position.copy(this.sunDir).multiplyScalar(SUN_DIST * 0.95);
-  }
-
-  addStars() { // 装飾 (物理的な明るさではない)
-    const n = 700, pos = new Float32Array(n * 3), col = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++) {
-      const u = Math.random() * 2 - 1, a = Math.random() * Math.PI * 2, s = Math.sqrt(1 - u * u);
-      pos.set([s * Math.cos(a) * 1500, s * Math.sin(a) * 1500, Math.abs(u) * 1500 * 0.9 + 20], i * 3);
-      col.fill(0.02 + Math.random() * 0.12, i * 3, i * 3 + 3);
-    }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-    this.scene.add(new THREE.Points(g, new THREE.PointsMaterial({ size: 1.3, sizeAttenuation: false, vertexColors: true })));
   }
 
   // ---------------------------------------------------------------- 月面

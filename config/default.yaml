@@ -71,7 +71,6 @@ sensors:
     width: 320
     height: 240
     rate_hz: 2            # レイトレは重いので低め (CPUに応じて上げる)
-    stars: true           # 恒星 (等級ベース。日向に合わせた露出では写らない)
     exposure: auto        # auto = 自動露出 / 数値 = 固定の露出倍率
     ev_bias: 0.0          # 露出補正 [EV]
     auto_exposure_max: 40.0

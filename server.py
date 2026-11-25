@@ -523,14 +523,12 @@ class FlashLidar:
 #
 # 放射輝度の単位: 垂直入射の太陽光を受ける反射率1の拡散面 = 1.0 (太陽の放射照度 E=pi).
 #   太陽円盤 = E / 立体角(6.7e-5 sr) ~ 4.7e4
-#   恒星   : 放射照度 E = pi * 10^(-0.4 (m + 26.74)) を画素の立体角で割る  (m: 見かけの等級)
 # ============================================================================
 
 SUN_COLOR = np.array([1.0, 0.945, 0.87], np.float32)
 SUN_ANG_RADIUS = math.radians(0.265)
 SUN_RADIANCE = (1.0 / SUN_ANG_RADIUS ** 2) * SUN_COLOR  # E / 立体角 = pi / (pi r^2)
 AMBIENT_COLOR = np.array([0.40, 0.42, 0.46], np.float32)
-STAR_PSF_SIGMA = 0.8  # 恒星の点広がり関数 [px]
 MAX_RANGE = 300.0     # 一次光線の地形マーチング距離 [m] (その先は z=0 の平面)
 
 
@@ -562,24 +560,6 @@ class _NoiseTile:
                 + (arr[y1, x0] * (1 - tx) + arr[y1, x1] * tx) * ty)
 
 
-class StarField:
-    """合成の恒星カタログ (実在の星の位置ではない). 個数は N(<m) = 4800 * 2.25^(m-6), m<7 に従う."""
-
-    def __init__(self, mag_limit: float = 7.0, seed: int = 11):
-        rng = np.random.default_rng(seed)
-        n_tot = int(4800 * 2.25 ** (mag_limit - 6))
-        n_min = 4800 * 2.25 ** (-1.5 - 6)  # 最も明るい星を -1.5 等で打ち切る
-        rank = n_min + rng.random(n_tot) * (n_tot - n_min)  # 明るい順の順位 -> 等級 (累積分布の逆関数)
-        mag = 6 + np.log(rank / 4800) / math.log(2.25)
-        z = rng.uniform(-1, 1, n_tot)
-        a = rng.uniform(0, 2 * math.pi, n_tot)
-        s = np.sqrt(1 - z * z)
-        self.dirs = np.stack([s * np.cos(a), s * np.sin(a), z], 1)
-        self.flux = (math.pi * 10 ** (-0.4 * (mag + 26.74))).astype(np.float32)  # 放射照度
-        temp = rng.random(n_tot)
-        self.tint = np.stack([0.85 + 0.25 * temp, np.ones(n_tot), 1.1 - 0.25 * temp], 1).astype(np.float32)
-
-
 class CameraModel:
     """ピンホールカメラ: 画素ごとの視線方向 (車体座標) と取付姿勢."""
 
@@ -591,7 +571,6 @@ class CameraModel:
         self.m_pos = mount_position(cfg["mount"])
         self.m_rot = mount_rotation(cfg["mount"])
         self.dirs_body = pinhole_directions(self.th, self.tv, self.w, self.h) @ self.m_rot.T
-        self.pix_omega = (2 * self.th / self.w) * (2 * self.tv / self.h)  # 画素の立体角 [sr]
 
 
 class RayTracer:
@@ -605,7 +584,6 @@ class RayTracer:
         rng = np.random.default_rng(world.seed + 101)
         self.fine = _NoiseTile(rng, 512, 0.06, 2.0)   # 6 cm/texel: 細かい粒状感
         self.coarse = _NoiseTile(rng, 512, 0.5, 2.4)  # 50 cm/texel
-        self.stars = StarField()
         self.cams = {c["name"]: CameraModel(c, i) for i, c in enumerate(cfg["sensors"]["cameras"])}
 
     # ------------------------------------------------------------ レンダリング
@@ -617,7 +595,6 @@ class RayTracer:
         Rm = rot_zyx(*pose[3:])
         o = np.array(pose[:3]) + Rm @ cam.m_pos
         d = cam.dirs_body @ Rm.T
-        basis = Rm @ cam.m_rot  # 列 = カメラの (前, 左, 上) の世界座標
 
         t, kind = w.raycast(o, d, 0.05, MAX_RANGE)  # 一次光線
         P = o + d * np.where(np.isfinite(t), t, 0.0)[:, None]
@@ -625,8 +602,6 @@ class RayTracer:
         rgb = np.zeros((len(d), 3), np.float32)
         sky = kind == World.NONE
         rgb[sky & (d @ L > math.cos(SUN_ANG_RADIUS))] = SUN_RADIANCE  # 太陽円盤
-        if cam.cfg["stars"] and sky.any():
-            self._add_stars(rgb, sky, cam, basis)
 
         # --- 面ごとに 法線・反射率・日照 を求めて着色 ---
         for k in (World.TERRAIN, World.HLS):
@@ -708,33 +683,6 @@ class RayTracer:
         v = ((g[iy, ix] * (1 - tx) + g[iy, ix + 1] * tx) * (1 - ty)
              + (g[iy + 1, ix] * (1 - tx) + g[iy + 1, ix + 1] * tx) * ty)
         return v / 255.0
-
-    # ------------------------------------------------------------ 恒星
-    def _add_stars(self, rgb, sky, cam: CameraModel, basis):
-        """空の画素に、恒星を点広がり関数(ガウス)で加算する。総フラックスは保存。"""
-        sf = self.stars
-        pc = sf.dirs @ basis
-        f = np.maximum(pc[:, 0], 1e-6)
-        u, v = (-pc[:, 1] / f) / cam.th, (pc[:, 2] / f) / cam.tv
-        ok = (pc[:, 0] > 0.05) & (np.abs(u) < 1.02) & (np.abs(v) < 1.02)
-        if not ok.any():
-            return
-        px = (u[ok] * 0.5 + 0.5) * cam.w - 0.5
-        py = (0.5 - v[ok] * 0.5) * cam.h - 0.5
-        radiance = sf.flux[ok] / cam.pix_omega
-        ix0, iy0 = np.floor(px).astype(np.int64), np.floor(py).astype(np.int64)
-        offsets = [(dx, dy) for dy in (-1, 0, 1, 2) for dx in (-1, 0, 1, 2)]  # 周囲 4x4 画素に配る
-        sig2 = 2 * STAR_PSF_SIGMA ** 2
-        weights = [np.exp(-((ix0 + dx - px) ** 2 + (iy0 + dy - py) ** 2) / sig2) for dx, dy in offsets]
-        total = np.sum(weights, axis=0) + 1e-12
-        flat = rgb.reshape(-1, 3)
-        for (dx, dy), wgt in zip(offsets, weights):
-            xx, yy = ix0 + dx, iy0 + dy
-            inside = (xx >= 0) & (xx < cam.w) & (yy >= 0) & (yy < cam.h)
-            lin = np.where(inside, yy * cam.w + xx, 0)
-            use = inside & sky[lin]
-            np.add.at(flat, lin[use], ((radiance * wgt / total)[use])[:, None] * sf.tint[ok][use])
-
 
 # ============================================================================
 # 7. ワーカー: 重い計算を別プロセスで
