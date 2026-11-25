@@ -5,7 +5,7 @@
 上から順に:
   1. 設定        config/default.yaml (既定) + 指定ファイル (差分) の読み込み
   2. 座標系      車体座標 x=前 y=左 z=上 / 世界座標 x=東 y=北 z=上
-  3. 月面        高さマップ (起伏+クレータ), 岩, 太陽の影, レイキャスト
+  3. 月面        高さマップ (起伏+クレータ), 太陽の影, レイキャスト
   4. ローバー    ユニサイクル運動 + 地形追従
   5. ライダー    フラッシュライダー (格子状レイ -> 点群)
   6. カメラ画像  レイトレーシング
@@ -120,7 +120,7 @@ def pinhole_directions(tan_h: float, tan_v: float, width: int, height: int) -> n
 
 
 # ============================================================================
-# 3. 月面: 高さマップ・岩・太陽の影・レイキャスト
+# 3. 月面: 高さマップ・太陽の影・レイキャスト
 # ============================================================================
 
 def _fractal_noise(rng, n: int, res: float, wavelength: float, beta: float = 2.2) -> np.ndarray:
@@ -143,6 +143,8 @@ def _smoothstep(x):
 
 
 class World:
+    NONE, TERRAIN, HLS = 0, 1, 2  # raycast が返す面の種別
+
     def __init__(self, cfg: dict):
         wc, hc, rc = cfg["world"], cfg["hls"], cfg["rover"]
         self.seed = int(wc["seed"])
@@ -173,14 +175,11 @@ class World:
         h += _fractal_noise(rng, self.n, self.res, 4.0, beta=3.0) * u["roughness"]
 
         # --- クレータ (サイズ頻度分布に従う。重なり合って飽和した極域ハイランドの外観) ---
-        self.craters = self._place_craters(rng, wc["craters"], pad)
-        for cx, cy, R, d in self.craters:
+        for cx, cy, R, d in self._place_craters(rng, wc["craters"], pad):
             self._add_crater(h, X, Y, cx, cy, R, d)
         h *= mask  # HLSパッドと地形端は平坦化
         self.heights = h.astype(np.float32)  # [iy, ix]
 
-        # --- 岩 ---
-        self.rocks = self._place_rocks(rng, wc["rocks"])  # (m,4): x,y,z,r
         self.hls_z0 = float(self.height(hc["x"], hc["y"]))
         self.ambient = float(wc["sun"]["ambient"])
         self.set_sun(wc["sun"]["azimuth_deg"], wc["sun"]["elevation_deg"])
@@ -224,41 +223,6 @@ class World:
         ejecta = 0.06 * d * np.clip(r, 1.0, None) ** -3.0 * (r >= 1.0)
         h[iy0:iy1, ix0:ix1] += bowl + rim + ejecta
 
-    def _place_rocks(self, rng, rc):
-        """岩の大きさ分布 (Golombek): 累積面積 F(D)=k exp(-qD), q=1.79+0.152/k.
-        個数密度 n(D) = -dF/dD / (pi D^2/4).  新しいクレータの縁に集中させる."""
-        k = float(rc["abundance"])
-        dmin, dmax = float(rc["min_diameter"]), float(rc["max_diameter"])
-        q = 1.79 + 0.152 / max(k, 1e-4)
-        Dg = np.linspace(dmin, dmax, 400)
-        nd = k * q * np.exp(-q * Dg) / (math.pi * Dg ** 2 / 4.0)
-        cdf = np.concatenate([[0], np.cumsum(0.5 * (nd[1:] + nd[:-1]) * np.diff(Dg))])
-        total = cdf[-1] * self.size ** 2
-        n = int(min(rc["max_count"], rng.poisson(total)))
-        D = np.interp(rng.random(n) * cdf[-1], cdf, Dg)
-        r = D / 2.0
-
-        half = self.size / 2.0 - 3.0
-        xy = rng.uniform(-half, half, (n, 2))
-        # 一部をクレータ縁へ
-        big = [c for c in self.craters if c[2] >= 4.0]
-        nrim = int(n * float(rc["rim_fraction"])) if big else 0
-        if nrim:
-            w = np.array([c[2] for c in big]); w = w / w.sum()
-            ci = rng.choice(len(big), nrim, p=w)
-            ang = rng.uniform(0, 2 * np.pi, nrim)
-            rr = np.array([big[i][2] for i in ci]) * (1.05 + rng.normal(0, 0.18, nrim))
-            xy[:nrim, 0] = np.array([big[i][0] for i in ci]) + rr * np.cos(ang)
-            xy[:nrim, 1] = np.array([big[i][1] for i in ci]) + rr * np.sin(ang)
-        hx, hy = self.hls["x"], self.hls["y"]
-        sx, sy = self.rover_start["x"], self.rover_start["y"]
-        ok = (np.abs(xy[:, 0]) < half) & (np.abs(xy[:, 1]) < half) & \
-             (np.hypot(xy[:, 0] - hx, xy[:, 1] - hy) > self.hls["radius"] + 2.0 + r) & \
-             (np.hypot(xy[:, 0] - sx, xy[:, 1] - sy) > 6.0 + r)
-        xy, r = xy[ok], r[ok]
-        z = self.height(xy[:, 0], xy[:, 1]) + 0.3 * r  # 一部埋まった球
-        return np.column_stack([xy, z, r]).astype(np.float64)
-
     # ---------------- 太陽 / 影の焼き込み ----------------
     def set_sun(self, azimuth_deg: float, elevation_deg: float):
         self.sun_azimuth = math.radians(azimuth_deg % 360.0)
@@ -266,7 +230,7 @@ class World:
 
     def bake_shade(self) -> np.ndarray:
         """地形自身が落とす影 (ホライズン判定). 戻り値 uint8 [iy,ix] (0=影, 255=日照).
-        太陽の視直径 (0.53deg) 分の半影を含む. 岩の影は bake_rock_shade, HLS/ローバーの影は影レイ (RayTracer) で求める."""
+        太陽の視直径 (0.53deg) 分の半影を含む. HLS/ローバーの影は影レイ (RayTracer) で求める."""
         az, el = self.sun_azimuth, self.sun_elevation
         dx, dy = math.cos(az), math.sin(az)
         tan_el = math.tan(el)
@@ -293,37 +257,6 @@ class World:
     def sun_dir(self) -> np.ndarray:
         e, a = self.sun_elevation, self.sun_azimuth
         return np.array([math.cos(e) * math.cos(a), math.cos(e) * math.sin(a), math.sin(e)])
-
-    def bake_rock_shade(self, cell: float = 0.25) -> np.ndarray:
-        """岩が地面に落とす影 (球 -> 地面の楕円). 戻り値 uint8 [m,m] (0=影), 格子間隔 cell [m].
-        球を光線方向に射影した断面は半径 r の円で、地面では太陽方位方向に 1/sin(仰角) 倍に伸びた楕円になる."""
-        m = int(round(self.size / cell)) + 1
-        vis = np.ones((m, m), np.float32)
-        az, el = self.sun_azimuth, self.sun_elevation
-        L = self.sun_dir()
-        ca, sa = math.cos(az), math.sin(az)
-        sin_e = max(math.sin(el), 1e-3)
-        org = self.origin
-        for cx, cy, cz, r in self.rocks:
-            zg = cz - 0.3 * r  # 岩の接地高さ
-            sh = (cz - zg) / max(L[2], 1e-3)
-            gx, gy = cx - L[0] * sh, cy - L[1] * sh  # 影の楕円の中心
-            a_maj = min(r / sin_e, 60.0)
-            ext = a_maj + r
-            ix0 = max(0, int((gx - ext - org) / cell)); ix1 = min(m, int((gx + ext - org) / cell) + 2)
-            iy0 = max(0, int((gy - ext - org) / cell)); iy1 = min(m, int((gy + ext - org) / cell) + 2)
-            if ix1 <= ix0 or iy1 <= iy0:
-                continue
-            xs = org + np.arange(ix0, ix1) * cell - gx
-            ys = org + np.arange(iy0, iy1) * cell - gy
-            XX, YY = np.meshgrid(xs, ys)
-            u = XX * ca + YY * sa       # 太陽方位方向
-            v = -XX * sa + YY * ca      # 直交方向
-            q = (u / a_maj) ** 2 + (v / r) ** 2
-            val = np.clip((q - 0.8) / 0.4, 0.0, 1.0)  # 半影 (縁をなだらかに)
-            win = vis[iy0:iy1, ix0:ix1]
-            np.minimum(win, val.astype(np.float32), out=win)
-        return np.rint(vis * 255).astype(np.uint8)
 
     def terrain_occluded(self, P: np.ndarray, L: np.ndarray, smax: float = 320.0) -> np.ndarray:
         """点 P (N,3) から太陽方向 L へ伸ばした光線が地形に遮られるか (地形が点より高ければ遮蔽)."""
@@ -374,23 +307,19 @@ class World:
         ts.append(tmax)
         return ts
 
-    def raycast(self, o: np.ndarray, d: np.ndarray, tmin: float, tmax: float, rocks: bool = True):
+    def raycast(self, o: np.ndarray, d: np.ndarray, tmin: float, tmax: float):
         """原点 o (3,) から方向 d (N,3 単位ベクトル) の各光線の最初の交点.
-        戻り値 (t, kind, rid): 距離 (当たらなければ inf) / 種別 (0=なし 1=地形 2=岩 3=HLS) / 岩の番号.
-        地形は tmax までマーチングし、地形の外側は z=0 の平面 (距離無制限) として扱う。
-        rocks=False なら岩は含めない (カメラ用には画素窓を使う高速版 RayTracer._rocks がある)."""
+        戻り値 (t, kind): 距離 (当たらなければ inf) / 面の種別 (NONE, TERRAIN, HLS).
+        地形は tmax までマーチングし、地形の外側は z=0 の平面 (距離無制限) として扱う."""
         t = self._ray_terrain(o, d, tmin, tmax)
-        kind = np.where(np.isfinite(t), 1, 0).astype(np.int8)
-        rid = np.full(len(d), -1, np.int32)
+        kind = np.where(np.isfinite(t), self.TERRAIN, self.NONE).astype(np.int8)
 
-        far = (kind == 0) & (d[:, 2] < -1e-5)  # 地形の外側の平面
+        far = (kind == self.NONE) & (d[:, 2] < -1e-5)  # 地形の外側の平面
         t[far] = -o[2] / d[far, 2]
-        kind[far] = 1
+        kind[far] = self.TERRAIN
 
-        if rocks:
-            self._ray_rocks(o, d, tmin, tmax, t, kind, rid)
         self._ray_hls(o, d, tmin, tmax, t, kind)
-        return t, kind, rid
+        return t, kind
 
     def _ray_terrain(self, o, d, tmin, tmax) -> np.ndarray:
         """高さマップのレイマーチング (交差を挟んだ区間を二分法で詰める). 当たらなければ inf."""
@@ -419,29 +348,6 @@ class World:
             prev = t
         return t_hit
 
-    def _ray_rocks(self, o, d, tmin, tmax, t, kind, rid):
-        """岩 (球) との交差. 光線束の円錐に入らない岩は先に除外する."""
-        if len(self.rocks) == 0:
-            return
-        rel = self.rocks[:, :3] - o
-        dist = np.linalg.norm(rel, axis=1)
-        axis = d.mean(axis=0)
-        axis /= np.linalg.norm(axis) + 1e-12
-        spread = float(np.arccos(np.clip((d @ axis).min(), -1, 1)))
-        for k in np.nonzero(dist < tmax + self.rocks[:, 3])[0]:
-            r = self.rocks[k, 3]
-            dk = max(dist[k], 1e-6)
-            ang = math.acos(np.clip(rel[k] @ axis / dk, -1, 1))
-            if ang > spread + math.asin(min(1.0, r / dk)) + 0.02:
-                continue
-            oc = o - self.rocks[k, :3]
-            b = d @ oc
-            disc = b * b - (oc @ oc - r * r)
-            tk = np.where(disc > 0, -b - np.sqrt(np.maximum(disc, 0.0)), np.inf)
-            tk[(tk < tmin) | (tk > tmax)] = np.inf
-            closer = tk < t
-            t[closer], kind[closer], rid[closer] = tk[closer], 2, k
-
     def _ray_hls(self, o, d, tmin, tmax, t, kind):
         """HLS (鉛直な円柱: 側面 + 上面) との交差."""
         h = self.hls
@@ -467,22 +373,19 @@ class World:
 
         th = np.minimum(side, top)
         closer = th < t
-        t[closer], kind[closer] = th[closer], 3
+        t[closer], kind[closer] = th[closer], self.HLS
 
-    def surface_normals(self, P, kind, rid):
-        """交点 P (N,3) での面の法線 (地形=勾配, 岩=球, HLS=円柱側面/上面)."""
+    def surface_normals(self, P, kind):
+        """交点 P (N,3) での面の法線 (地形=高さマップの勾配, HLS=円柱の側面/上面)."""
         n = np.zeros((len(P), 3))
-        m = kind == 1
+        m = kind == self.TERRAIN
         if m.any():
             e = 0.6
             x, y = P[m, 0], P[m, 1]
             hx = (self.height(x + e, y) - self.height(x - e, y)) / (2 * e)
             hy = (self.height(x, y + e) - self.height(x, y - e)) / (2 * e)
             n[m] = np.stack([-hx, -hy, np.ones_like(hx)], 1)
-        m = kind == 2
-        if m.any():
-            n[m] = (P[m] - self.rocks[rid[m], :3]) / self.rocks[rid[m], 3][:, None]
-        m = kind == 3
+        m = kind == self.HLS
         if m.any():
             h = self.hls
             v = P[m] - [h["x"], h["y"], 0.0]
@@ -576,9 +479,9 @@ class FlashLidar:
         self.tmax = float(cfg["max_range"])
         self.noise = float(cfg["range_noise_std"])
         self.dropout = float(cfg["dropout"])
-        # 検出限界 (max_range の基準反射率と、面の種別 [なし, 地形, 岩, HLS] ごとの反射率)
+        # 検出限界 (max_range の基準反射率と、面の種別 [なし, 地形, HLS] ごとの反射率)
         self.rho_ref = float(cfg["reference_reflectivity"])
-        self.rho = np.array([0.0, cfg["ground_reflectivity"], cfg["rock_reflectivity"], cfg["hls_reflectivity"]])
+        self.rho = np.array([0.0, cfg["ground_reflectivity"], cfg["hls_reflectivity"]])
         self.rng = np.random.default_rng(seed)
 
         # 画素ごとの方向 (カメラと同じ平面投影) を車体座標へ
@@ -592,11 +495,11 @@ class FlashLidar:
         R = rot_zyx(*pose[3:])
         origin = np.array(pose[:3]) + R @ self.m_pos
         d_world = self.dirs_body @ R.T
-        t, kind, rid = self.world.raycast(origin, d_world, self.tmin, self.tmax)
+        t, kind = self.world.raycast(origin, d_world, self.tmin, self.tmax)
 
         # 検出限界: 受信強度 ∝ 反射率 x cos(入射角) / 距離^2。地面すれすれや暗い面ほど短い距離で検出できなくなる
         hit = np.isfinite(t)
-        normals = self.world.surface_normals(origin + d_world * np.where(hit, t, 0.0)[:, None], kind, rid)
+        normals = self.world.surface_normals(origin + d_world * np.where(hit, t, 0.0)[:, None], kind)
         cos_inc = np.abs((normals * d_world).sum(1))
         r_eff = self.tmax * np.sqrt(self.rho[kind] * cos_inc / self.rho_ref)
         valid = hit & (t <= np.minimum(r_eff, self.tmax))
@@ -610,7 +513,7 @@ class FlashLidar:
 # ============================================================================
 # 6. カメラ画像のレイトレーシング
 #
-# 各画素から光線を飛ばして 地形(高さマップ) / 岩(球) / HLS(円柱) との交点を求め、
+# 各画素から光線を飛ばして 地形(高さマップ) / HLS(円柱) との交点を求め、
 # 太陽方向へ影レイを飛ばして日照を判定し、月面の反射(Lommel-Seeliger)で放射輝度[相対値]を計算する。
 # 出力は線形(HDR)。露出/ノイズ/トーンカーブなどのセンサ処理はブラウザ側 (web/app.js の Cameras)。
 #
@@ -698,13 +601,12 @@ class RayTracer:
         rng = np.random.default_rng(world.seed + 101)
         self.fine = _NoiseTile(rng, 512, 0.06, 2.0)   # 6 cm/texel: 細かい粒状感
         self.coarse = _NoiseTile(rng, 512, 0.5, 2.4)  # 50 cm/texel
-        self.rock_albedo = (0.20 * (0.75 + 0.5 * rng.random(len(world.rocks)))).astype(np.float32)
         self.stars = StarField()
         self.cams = {c["name"]: CameraModel(c, i) for i, c in enumerate(cfg["sensors"]["cameras"])}
 
     # ------------------------------------------------------------ レンダリング
-    def render(self, name: str, pose, shade: np.ndarray, rock_shade: np.ndarray) -> np.ndarray:
-        """pose=(x,y,z,yaw,pitch,roll). shade/rock_shade: World.bake_shade / bake_rock_shade の結果.
+    def render(self, name: str, pose, shade: np.ndarray) -> np.ndarray:
+        """pose=(x,y,z,yaw,pitch,roll). shade: World.bake_shade の結果 (地形が落とす影).
         戻り値: (h, w, 3) float16 の線形RGB (HDR)."""
         cam, w = self.cams[name], self.world
         L = w.sun_dir()
@@ -713,42 +615,33 @@ class RayTracer:
         d = cam.dirs_body @ Rm.T
         basis = Rm @ cam.m_rot  # 列 = カメラの (前, 左, 上) の世界座標
 
-        # --- 一次光線: 地形・平面・HLS は World、岩はカメラ用の画素窓方式 ---
-        t, kind, rid = w.raycast(o, d, 0.05, MAX_RANGE, rocks=False)
-        self._rocks(o, d, basis, cam, t, kind, rid)
+        t, kind = w.raycast(o, d, 0.05, MAX_RANGE)  # 一次光線
         P = o + d * np.where(np.isfinite(t), t, 0.0)[:, None]
 
         rgb = np.zeros((len(d), 3), np.float32)
-        sky = kind == 0
+        sky = kind == World.NONE
         rgb[sky & (d @ L > math.cos(SUN_ANG_RADIUS))] = SUN_RADIANCE  # 太陽円盤
         if cam.cfg["stars"] and sky.any():
             self._add_stars(rgb, sky, cam, basis)
 
         # --- 面ごとに 法線・反射率・日照 を求めて着色 ---
-        for k in (1, 2, 3):
+        for k in (World.TERRAIN, World.HLS):
             m = np.nonzero(kind == k)[0]
             if m.size:
-                rgb[m] = self._surface(k, P[m], t[m], rid[m], -d[m], L, shade, rock_shade, pose, Rm)
+                rgb[m] = self._surface(k, P[m], t[m], -d[m], L, shade, pose, Rm)
         return rgb.reshape(cam.h, cam.w, 3).astype(np.float16)
 
-    def _surface(self, kind, P, t, rid, V, L, shade, rock_shade, pose, Rm):
-        """kind 1=地形 2=岩 3=HLS の交点 P での放射輝度."""
+    def _surface(self, kind, P, t, V, L, shade, pose, Rm):
+        """面の種別 kind (TERRAIN / HLS) の交点 P での放射輝度."""
         w = self.world
-        x, y = P[:, 0], P[:, 1]
-        if kind == 1:
+        if kind == World.TERRAIN:
             n, albedo = self._terrain_normal_albedo(P, t)
-            vis = self._lookup(shade, x, y, w.res) * self._lookup(rock_shade, x, y, 0.25)  # 地形/岩の影
-            vis = vis * ~self._hls_shadow(P, L) * ~self._box_shadow(P, L, pose, Rm)
-        elif kind == 2:
-            n = w.surface_normals(P, np.full(len(P), 2), rid)
-            P = P + n * 0.02
-            albedo = self.rock_albedo[rid] * np.clip(1 + 0.15 * self.fine.sample(self.fine.v, x + P[:, 2], y - P[:, 2]), 0.5, 1.6)
-            vis = ~w.terrain_occluded(P, L) & ~self._hls_shadow(P, L) & ~self._box_shadow(P, L, pose, Rm)
+            vis = self._lookup(shade, P[:, 0], P[:, 1]) * ~self._hls_shadow(P, L) * ~self._box_shadow(P, L, pose, Rm)
         else:
-            n = w.surface_normals(P, np.full(len(P), 3), rid)
+            n = w.surface_normals(P, np.full(len(P), World.HLS))
             albedo = np.tile(self.hls_albedo, (len(P), 1))
             vis = ~w.terrain_occluded(P + n * 0.05, L)
-        return self._shade(albedo, n, V, L, vis.astype(np.float32), lambert=(kind == 3))
+        return self._shade(albedo, n, V, L, vis.astype(np.float32), lambert=(kind == World.HLS))
 
     def _terrain_normal_albedo(self, P, t):
         """地形の法線 (高さマップの勾配 + 微小起伏) と反射率."""
@@ -776,30 +669,6 @@ class RayTracer:
         albedo = albedo[:, None] if albedo.ndim == 1 else albedo
         return (albedo * (ls * vis)[:, None] * SUN_COLOR + albedo * self.world.ambient * AMBIENT_COLOR).astype(np.float32)
 
-    # ------------------------------------------------------------ 岩 (一次光線)
-    def _rocks(self, o, d, basis, cam: CameraModel, t, kind, rid):
-        """各岩が画面に占める矩形の画素だけを球と交差判定する (全画素x全岩より大幅に速い)."""
-        rocks = self.world.rocks
-        pc = (rocks[:, :3] - o) @ basis  # (前, 左, 上)
-        f = np.maximum(pc[:, 0], 1e-6)
-        px = ((-pc[:, 1] / f) / cam.th * 0.5 + 0.5) * cam.w
-        py = (0.5 - (pc[:, 2] / f) / cam.tv * 0.5) * cam.h
-        pr = (rocks[:, 3] / f) / cam.th * 0.5 * cam.w * 1.8 + 2.0  # 画面上の半径 [px] (余裕つき)
-        visible = (pc[:, 0] > 0.1) & (px > -pr) & (px < cam.w + pr) & (py > -pr) & (py < cam.h + pr)
-        for k in np.nonzero(visible)[0]:
-            x0, x1 = max(0, int(px[k] - pr[k])), min(cam.w, int(px[k] + pr[k]) + 2)
-            y0, y1 = max(0, int(py[k] - pr[k])), min(cam.h, int(py[k] + pr[k]) + 2)
-            if x1 <= x0 or y1 <= y0:
-                continue
-            sub = (np.arange(y0, y1)[:, None] * cam.w + np.arange(x0, x1)[None, :]).ravel()
-            r = rocks[k, 3]
-            oc = o - rocks[k, :3]
-            b = d[sub] @ oc
-            disc = b * b - (oc @ oc - r * r)
-            tk = np.where(disc > 0, -b - np.sqrt(np.maximum(disc, 0.0)), np.inf)
-            closer = (tk > 0.05) & (tk < t[sub])
-            t[sub[closer]], kind[sub[closer]], rid[sub[closer]] = tk[closer], 2, k
-
     # ------------------------------------------------------------ 影
     def _hls_shadow(self, P, L):
         """点 P から太陽方向へ伸ばした光線が HLS(円柱) に遮られるか."""
@@ -824,9 +693,9 @@ class RayTracer:
         t_out = np.nanmin(np.maximum(t1, t2), axis=1)
         return (t_out > np.maximum(t_in, 0.0)) & (t_out > 0.0)
 
-    def _lookup(self, grid_u8, x, y, cell):
-        """uint8 の影マップを双線形補間して 0..1 で返す."""
-        n = grid_u8.shape[0]
+    def _lookup(self, grid_u8, x, y):
+        """uint8 の影マップ (高さマップと同じ格子) を双線形補間して 0..1 で返す."""
+        n, cell = grid_u8.shape[0], self.world.res
         fx = np.clip((x - self.world.origin) / cell, 0, n - 1.001)
         fy = np.clip((y - self.world.origin) / cell, 0, n - 1.001)
         ix, iy = fx.astype(np.int64), fy.astype(np.int64)
@@ -880,10 +749,10 @@ def worker_init(cfg: dict) -> None:
     _S["lidars"] = [FlashLidar(c, world, seed=100 + i) for i, c in enumerate(cfg["sensors"]["lidars"])]
 
 
-def worker_render_camera(name: str, pose, sun_az: float, sun_el: float, shade, rock_shade):
+def worker_render_camera(name: str, pose, sun_az: float, sun_el: float, shade):
     world = _S["world"]
     world.sun_azimuth, world.sun_elevation = sun_az, sun_el  # 太陽はメイン側の値に合わせる (ラジアン)
-    return _S["rt"].render(name, pose, shade, rock_shade)
+    return _S["rt"].render(name, pose, shade)
 
 
 def worker_scan_lidar(idx: int, pose):
@@ -891,10 +760,10 @@ def worker_scan_lidar(idx: int, pose):
 
 
 def worker_bake(az_deg: float, el_deg: float):
-    """太陽の方位/仰角 [deg] を設定して影を再計算. 戻り値: (方位rad, 仰角rad, 地形の影, 岩の影)."""
+    """太陽の方位/仰角 [deg] を設定して影を再計算. 戻り値: (方位rad, 仰角rad, 地形の影)."""
     world = _S["world"]
     world.set_sun(az_deg, el_deg)
-    return world.sun_azimuth, world.sun_elevation, world.bake_shade(), world.bake_rock_shade()
+    return world.sun_azimuth, world.sun_elevation, world.bake_shade()
 
 
 # ============================================================================
@@ -917,7 +786,6 @@ class SimServer:
         self.cmd_time = 0.0
         # 太陽が決める影 (方位/仰角を変えると再計算する)
         self.shade = self.world.bake_shade()
-        self.rock_shade = self.world.bake_rock_shade()
         self._sun_pending = None
         self._sun_busy = False
 
@@ -939,9 +807,8 @@ class SimServer:
             while self._sun_pending is not None:
                 az, el = self._sun_pending
                 self._sun_pending = None
-                az_r, el_r, shade, rock_shade = await loop.run_in_executor(self.pool, worker_bake, az, el)
+                az_r, el_r, self.shade = await loop.run_in_executor(self.pool, worker_bake, az, el)
                 self.world.sun_azimuth, self.world.sun_elevation = az_r, el_r
-                self.shade, self.rock_shade = shade, rock_shade
                 await self._broadcast(json.dumps({"t": "sun", **self.sun_deg()}))
         finally:
             self._sun_busy = False
@@ -954,7 +821,6 @@ class SimServer:
         c = self.cfg
         return {
             "terrain": {"size": self.world.size, "res": self.world.res, "n": self.world.n, "hls_z0": self.world.hls_z0},
-            "rocks": [[round(float(v), 3) for v in r] for r in self.world.rocks],
             "hls": self.world.hls,
             "rover": c["rover"],
             "cameras": c["sensors"]["cameras"],
@@ -1002,7 +868,7 @@ class SimServer:
         cam, pose = self.cameras[name], self.rover.pose()
         img = await asyncio.get_running_loop().run_in_executor(
             self.pool, worker_render_camera, name, pose,
-            self.world.sun_azimuth, self.world.sun_elevation, self.shade, self.rock_shade)
+            self.world.sun_azimuth, self.world.sun_elevation, self.shade)
         header = struct.pack("<BBHH6x6f", MSG_CAMERA, cam.index, cam.w, cam.h, *pose)
         await self._broadcast(header + img.tobytes())
 

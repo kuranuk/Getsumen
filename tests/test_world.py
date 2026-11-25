@@ -43,25 +43,25 @@ class WorldTests(unittest.TestCase):
 
     def test_ray_hits_ground(self):
         o = np.array([-60.0, 60.0, 10.0])
-        t, kind, _ = self.world.raycast(o, np.array([[0.0, 0.0, -1.0]]), 0.1, 100.0)
+        t, kind = self.world.raycast(o, np.array([[0.0, 0.0, -1.0]]), 0.1, 100.0)
         self.assertAlmostEqual(float(t[0]), 10.0 - float(self.world.height(o[0], o[1])), delta=0.02)
-        self.assertEqual(kind[0], 1)
+        self.assertEqual(kind[0], World.TERRAIN)
 
     def test_ray_hits_hls_side_and_top(self):
         h = self.world.hls
         z0, top = self.world.hls_z0, self.world.hls_z0 + h["height"]
-        t, kind, _ = self.world.raycast(np.array([h["x"] - 30.0, h["y"], z0 + 2.0]), np.array([[1.0, 0.0, 0.0]]), 0.1, 100.0)
+        t, kind = self.world.raycast(np.array([h["x"] - 30.0, h["y"], z0 + 2.0]), np.array([[1.0, 0.0, 0.0]]), 0.1, 100.0)
         self.assertAlmostEqual(float(t[0]), 30.0 - h["radius"], delta=0.05)
-        self.assertEqual(kind[0], 3)
-        t, kind, _ = self.world.raycast(np.array([h["x"], h["y"], top + 5.0]), np.array([[0.0, 0.0, -1.0]]), 0.1, 100.0)
+        self.assertEqual(kind[0], World.HLS)
+        t, kind = self.world.raycast(np.array([h["x"], h["y"], top + 5.0]), np.array([[0.0, 0.0, -1.0]]), 0.1, 100.0)
         self.assertAlmostEqual(float(t[0]), 5.0, delta=0.05)  # 上面
 
     def test_ray_beyond_terrain_hits_plane(self):
         o = np.array([self.world.size / 2 - 3.0, 0.0, 2.0])
         d = np.array([[1.0, 0.0, -0.01]])  # 地形の外側へ向かう浅い光線 -> z=0 の平面に当たる
         d /= np.linalg.norm(d)
-        t, kind, _ = self.world.raycast(o, d, 0.1, 300.0)
-        self.assertEqual(kind[0], 1)
+        t, kind = self.world.raycast(o, d, 0.1, 300.0)
+        self.assertEqual(kind[0], World.TERRAIN)
         self.assertAlmostEqual(float(o[2] + d[0, 2] * t[0]), 0.0, delta=1e-6)
 
     def test_lidar_scan(self):
@@ -91,7 +91,6 @@ class WorldTests(unittest.TestCase):
         import copy
         flat = copy.copy(self.world)
         flat.heights = np.zeros_like(self.world.heights)
-        flat.rocks = self.world.rocks[:0]
         cfg = load_config()
         c = cfg["sensors"]["lidars"][0]
         c.update(range_noise_std=0.0, dropout=0.0)
@@ -134,10 +133,9 @@ class RayTraceTests(unittest.TestCase):
         cls.world = World(cls.cfg)
         cls.rt = RayTracer(cls.cfg, cls.world)
         cls.shade = cls.world.bake_shade()
-        cls.rock = cls.world.bake_rock_shade()
 
     def render(self, name, pose):
-        return self.rt.render(name, pose, self.shade, self.rock).astype(np.float32)
+        return self.rt.render(name, pose, self.shade).astype(np.float32)
 
     def test_render_shape_and_hdr(self):
         img = self.render("front", Rover(self.cfg["rover"], self.world).pose())

@@ -10,7 +10,7 @@ const rad = (d) => (d * Math.PI) / 180;
 const deg = (r) => (r * 180) / Math.PI;
 
 // ======================================================================
-// 右側の3Dビュー (three.js): 月面・岩・HLS・ローバー・太陽。世界座標・車体座標とも z-up (x=前/東, y=左/北)
+// 右側の3Dビュー (three.js): 月面・HLS・ローバー・太陽。世界座標・車体座標とも z-up (x=前/東, y=左/北)
 // ======================================================================
 
 const SUN_DIST = 1500;
@@ -40,7 +40,6 @@ class MoonView {
     this.addLights();
     this.addStars();
     this.addTerrain(heights);
-    this.addRocks();
     this.addHls();
     this.addRover();
     this.setSun(rad(world.sun.az_deg), rad(world.sun.el_deg));
@@ -136,26 +135,6 @@ class MoonView {
       col.setXYZ(i, v, v, v * 0.98);
     }
     col.needsUpdate = true;
-  }
-
-  addRocks() { // サーバと同じ球 (見た目だけ少し歪ませる)
-    const rocks = this.world.rocks;
-    const g = new THREE.IcosahedronGeometry(1, 1);
-    const p = g.attributes.position;
-    for (let i = 0; i < p.count; i++) {
-      const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
-      const k = 1 + 0.10 * Math.sin(x * 5.1 + y * 3.7) * Math.cos(z * 4.3 + x * 2.1);
-      p.setXYZ(i, x * k, y * k, z * k);
-    }
-    g.computeVertexNormals();
-    const mesh = new THREE.InstancedMesh(g, this.regolithMaterial({ color: 0x8d8984 }), rocks.length);
-    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
-    rocks.forEach(([x, y, z, r], i) => {
-      e.set(Math.random() * 6, Math.random() * 6, Math.random() * 6);
-      mesh.setMatrixAt(i, m.compose(new THREE.Vector3(x, y, z), q.setFromEuler(e), new THREE.Vector3(r, r, r)));
-    });
-    mesh.castShadow = mesh.receiveShadow = true;
-    this.scene.add(mesh);
   }
 
   // ---------------------------------------------------------------- HLS (円柱) / ローバー (箱)
