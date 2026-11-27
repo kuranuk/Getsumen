@@ -251,6 +251,7 @@ class Cameras {
     this.wheelRadius = world.rover.wheel_radius;
     this.distanceOverlay = true; // 画面のチェックボックスで切り替える
     container.style.setProperty('--cols', world.ui.camera_grid_columns);
+    this.onPixels = null; // 処理後の画像 (グレアや目盛を重ねる前) を受け取る関数 (index, ImageData)。俯瞰画像が使う
     this.cams = world.cameras.map((cfg) => this.createCamera(cfg, container));
   }
 
@@ -317,6 +318,7 @@ class Cameras {
   draw(c) {
     this.updateExposure(c);
     this.drawPixels(c);
+    if (this.onPixels) this.onPixels(this.cams.indexOf(c), c.img);
     this.drawGlare(c);
     if (c.cfg.distance_overlay && this.distanceOverlay) this.drawDistanceRings(c);
   }
@@ -435,6 +437,88 @@ class Cameras {
 }
 
 // ======================================================================
+// 俯瞰画像 (バードアイ): 各カメラ画像を、平らな地面 (車輪の接地高さ) に写像して、点群ビューの背景にする
+// ======================================================================
+
+const BIRD_MAX_DIST = 25;       // 写像する地面の最大距離 [m] (遠方は地面が画像の数行に圧縮され、引き伸ばされて粗くなるため)
+const BIRD_MAX_PIXELS = 250000; // 写像を計算する解像度の上限 (超えるときは粗く計算して拡大表示する)
+
+class BirdEye {
+  constructor(world) {
+    this.groundZ = -world.rover.wheel_radius; // 地面の高さ (車体座標)
+    this.cams = world.cameras.map((cfg) => {
+      const m = cfg.mount, yaw = rad(m.yaw_deg || 0), pitch = -rad(m.pitch_deg || 0); // pitch は下向きが正
+      const th = Math.tan(rad(cfg.fov_deg) / 2);
+      return { w: cfg.width, h: cfg.height, th, tv: (th * cfg.height) / cfg.width, pos: [m.x || 0, m.y || 0, m.z || 0],
+               cy: Math.cos(yaw), sy: Math.sin(yaw), cp: Math.cos(pitch), sp: Math.sin(pitch) };
+    });
+    this.canvas = document.createElement('canvas');
+    this.latest = this.cams.map(() => null); // 各カメラの最新の画像 (RGBA)
+    this.enabled = true;
+    this.layout = '';
+    this.dest = null;
+  }
+
+  /** 点群ビューの配置 (大きさ・自車の位置・縮尺) が変わったら、「地面の点 -> カメラ画素」の対応を作り直す。
+   *  各地点は、それが見えるカメラのうち、最も近いカメラの画素を使う。 */
+  setLayout(W, H, cx, cy, scale) {
+    const key = `${W},${H},${cx},${cy},${scale}`;
+    if (key === this.layout) return;
+    this.layout = key;
+    const q = Math.max(1, Math.ceil(Math.sqrt((W * H) / BIRD_MAX_PIXELS)));
+    const w = Math.ceil(W / q), h = Math.ceil(H / q);
+    this.canvas.width = w;
+    this.canvas.height = h;
+    this.dest = new ImageData(w, h);
+    this.owner = new Int8Array(w * h).fill(-1);   // その地点に使うカメラ
+    this.source = new Int32Array(w * h);          // そのカメラ画像の画素の位置 (RGBA の先頭)
+    for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+      const X = (cy - (j + 0.5) * q) / scale, Y = (cx - (i + 0.5) * q) / scale; // 地面の位置 (車体座標: 前, 左)
+      let nearest = BIRD_MAX_DIST;
+      this.cams.forEach((c, k) => {
+        const vx = X - c.pos[0], vy = Y - c.pos[1], vz = this.groundZ - c.pos[2];
+        const dist = Math.hypot(vx, vy);
+        if (dist >= nearest) return;
+        const x1 = vx * c.cy + vy * c.sy, y1 = -vx * c.sy + vy * c.cy;  // 取付のヨーを戻す
+        const xs = c.cp * x1 - c.sp * vz, zs = c.sp * x1 + c.cp * vz;   // ピッチを戻す (センサ座標: x=前, y=左, z=上)
+        if (xs < 0.2) return;
+        const px = ((-y1 / xs / c.th) * 0.5 + 0.5) * c.w, py = (0.5 - (zs / xs / c.tv) * 0.5) * c.h;
+        if (px < 0 || px >= c.w || py < 0 || py >= c.h) return;
+        nearest = dist;
+        this.owner[j * w + i] = k;
+        this.source[j * w + i] = (Math.floor(py) * c.w + Math.floor(px)) * 4;
+      });
+    }
+    for (let k = 0; k < this.cams.length; k++) this.paint(k); // 受信済みの画像を貼り直す
+  }
+
+  /** カメラ k の最新の画像 (露出などの処理後の RGBA) を受け取って貼る */
+  update(k, imageData) {
+    this.latest[k] = imageData.data.slice(); // ImageData は使い回されるので、コピーを持つ
+    this.paint(k);
+  }
+
+  paint(k) {
+    const src = this.latest[k];
+    if (!src || !this.dest) return;
+    const d = this.dest.data;
+    for (let i = 0; i < this.owner.length; i++) {
+      if (this.owner[i] !== k) continue;
+      const s = this.source[i], o = i * 4;
+      d[o] = src[s]; d[o + 1] = src[s + 1]; d[o + 2] = src[s + 2]; d[o + 3] = 255;
+    }
+    this.canvas.getContext('2d').putImageData(this.dest, 0, 0);
+  }
+
+  draw(ctx, W, H) {
+    if (!this.dest) return;
+    ctx.globalAlpha = 0.8; // 少し暗くして、重ねる点群を目立たせる
+    ctx.drawImage(this.canvas, 0, 0, W, H);
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ======================================================================
 // ライダーの点群: 車体の上から見た図 (左上のcanvas) と、右の3Dビュー上の点群。座標は車体座標
 // ======================================================================
 
@@ -452,6 +536,7 @@ function heightColor(z, out, o) {
 class Lidars {
   constructor(world, view, canvas) {
     this.rover = world.rover;
+    this.bird = new BirdEye(world);
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.viewRange = world.ui.lidar_view_range; // 表示半径 [m]
@@ -513,6 +598,10 @@ class Lidars {
     ctx.fillStyle = '#05070a';
     ctx.fillRect(0, 0, W, H);
 
+    if (this.bird.enabled) { // 背景: カメラ画像を地面に写像した俯瞰画像 (点群はこの上に重ねる)
+      this.bird.setLayout(W, H, cx, cy, scale);
+      this.bird.draw(ctx, W, H);
+    }
     this.drawRings(cx, cy, scale, W, H, dpr);
     this.lidars.forEach((l) => this.drawFootprint(l.cfg, sx, sy, dpr));
     this.lidars.forEach((l) => l.frame && this.drawPoints(l.frame, sx, sy, scale, W, H, dpr));
@@ -737,7 +826,9 @@ async function main() {
   };
   showExposure();
 
+  cameras.onPixels = (k, image) => lidars.bird.update(k, image);
   $('#c-points').onchange = (e) => lidars.setPointsVisible(e.target.checked);
+  $('#c-bird').onchange = (e) => { lidars.bird.enabled = e.target.checked; };
   $('#c-dist').onchange = (e) => { cameras.distanceOverlay = e.target.checked; };
 
   // ------------------------------------------------------------------ 視点 (追従 / 俯瞰。ドラッグで回転、ホイールでズーム)
