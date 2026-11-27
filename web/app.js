@@ -440,11 +440,14 @@ class Cameras {
 // 俯瞰画像 (バードアイ): 各カメラ画像を、平らな地面 (車輪の接地高さ) に写像して、点群ビューの背景にする
 // ======================================================================
 
-const BIRD_MAX_DIST = 25;       // 写像する地面の最大距離 [m] (遠方は地面が画像の数行に圧縮され、引き伸ばされて粗くなるため)
 const BIRD_MAX_PIXELS = 250000; // 写像を計算する解像度の上限 (超えるときは粗く計算して拡大表示する)
 
 class BirdEye {
   constructor(world) {
+    const opt = world.ui.bird_eye; // 設定 (ui.bird_eye): enabled / max_distance / opacity
+    this.enabled = opt.enabled;
+    this.maxDistance = opt.max_distance;
+    this.opacity = opt.opacity;
     this.groundZ = -world.rover.wheel_radius; // 地面の高さ (車体座標)
     this.cams = world.cameras.map((cfg) => {
       const m = cfg.mount, yaw = rad(m.yaw_deg || 0), pitch = -rad(m.pitch_deg || 0); // pitch は下向きが正
@@ -454,7 +457,6 @@ class BirdEye {
     });
     this.canvas = document.createElement('canvas');
     this.latest = this.cams.map(() => null); // 各カメラの最新の画像 (RGBA)
-    this.enabled = true;
     this.layout = '';
     this.dest = null;
   }
@@ -474,7 +476,7 @@ class BirdEye {
     this.source = new Int32Array(w * h);          // そのカメラ画像の画素の位置 (RGBA の先頭)
     for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
       const X = (cy - (j + 0.5) * q) / scale, Y = (cx - (i + 0.5) * q) / scale; // 地面の位置 (車体座標: 前, 左)
-      let nearest = BIRD_MAX_DIST;
+      let nearest = this.maxDistance;
       this.cams.forEach((c, k) => {
         const vx = X - c.pos[0], vy = Y - c.pos[1], vz = this.groundZ - c.pos[2];
         const dist = Math.hypot(vx, vy);
@@ -512,7 +514,7 @@ class BirdEye {
 
   draw(ctx, W, H) {
     if (!this.dest) return;
-    ctx.globalAlpha = 0.8; // 少し暗くして、重ねる点群を目立たせる
+    ctx.globalAlpha = this.opacity; // 暗くして、重ねる点群を目立たせる
     ctx.drawImage(this.canvas, 0, 0, W, H);
     ctx.globalAlpha = 1;
   }
@@ -827,6 +829,7 @@ async function main() {
   showExposure();
 
   cameras.onPixels = (k, image) => lidars.bird.update(k, image);
+  $('#c-bird').checked = lidars.bird.enabled;
   $('#c-points').onchange = (e) => lidars.setPointsVisible(e.target.checked);
   $('#c-bird').onchange = (e) => { lidars.bird.enabled = e.target.checked; };
   $('#c-dist').onchange = (e) => { cameras.distanceOverlay = e.target.checked; };
